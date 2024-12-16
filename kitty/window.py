@@ -382,13 +382,10 @@ def as_text(
         pht = pagerhist(screen, as_ansi, add_wrap_markers)
         h: list[str] = [pht] if pht else []
         screen.as_text_for_history_buf(h.append, as_ansi, add_wrap_markers)
-        if bottom_mode:
-            len_lines = len(lines)
-            len_h = len(h)
-            len_bottom = len_lines * 9
-            if len_lines > 0 and len_h > 0 and len_h > len_bottom:
-                h = h[len_h-len_bottom:]
         if h:
+            if bottom_mode:
+                if len(h) > 4000:
+                    h = h[-4000:]
             if as_ansi:
                 h[-1] += '\x1b[m'
         ans = ''.join(chain(h, lines))
