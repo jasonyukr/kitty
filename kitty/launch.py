@@ -6,7 +6,7 @@ import os
 import shutil
 from collections.abc import Container, Iterable, Iterator, Sequence
 from contextlib import suppress
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, TypedDict
 
 from .boss import Boss
 from .child import Child
@@ -19,11 +19,6 @@ from .tabs import Tab, TabManager
 from .types import OverlayType, run_once
 from .utils import get_editor, log_error, resolve_custom_file, which
 from .window import CwdRequest, CwdRequestType, Watchers, Window
-
-try:
-    from typing import TypedDict
-except ImportError:
-    TypedDict = dict
 
 
 class LaunchSpec(NamedTuple):
@@ -423,6 +418,7 @@ def load_watch_modules(watchers: Iterable[str]) -> Optional[Watchers]:
         return None
     import runpy
     ans = Watchers()
+    boss = get_boss()
     for path in watchers:
         path = resolve_custom_file(path)
         m = watcher_modules.get(path, None)
@@ -436,6 +432,14 @@ def load_watch_modules(watchers: Iterable[str]) -> Optional[Watchers]:
                 watcher_modules[path] = False
                 continue
             watcher_modules[path] = m
+            w = m.get('on_load')
+            if callable(w):
+                try:
+                    w(boss, {})
+                except Exception as err:
+                    import traceback
+                    log_error(traceback.format_exc())
+                    log_error(f'Failed to call on_load() in watcher from {path} with error: {err}')
         if m is False:
             continue
         w = m.get('on_close')
@@ -477,7 +481,7 @@ class LaunchKwds(TypedDict):
 
 
 def apply_colors(window: Window, spec: Sequence[str]) -> None:
-    from kitty.rc.set_colors import parse_colors
+    from .colors import parse_colors
     colors, transparent_background_colors = parse_colors(spec)
     profiles = window.screen.color_profile,
     patch_color_profiles(colors, transparent_background_colors, profiles, True)
@@ -908,6 +912,8 @@ class CloneCmd:
                     # skip SSH environment variables
                     'SSH_CLIENT', 'SSH_CONNECTION', 'SSH_ORIGINAL_COMMAND', 'SSH_TTY', 'SSH2_TTY',
                     'SSH_TUNNEL', 'SSH_USER_AUTH', 'SSH_AUTH_SOCK',
+                    # Dont clone KITTY_WINDOW_ID
+                    'KITTY_WINDOW_ID',
                 } and not k.startswith((
                     # conda state env vars for multi-level virtual environments
                     'CONDA_PREFIX_',

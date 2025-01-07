@@ -137,10 +137,11 @@ def put_helpers(self, cw, ch, cols=10, lines=5):
         iid += 1
         imgid = kw.pop('id', None) or iid
         no_id = kw.pop('no_id', False)
+        a = kw.pop('a', 'T')
         if no_id:
-            cmd = 'a=T,f=24,s=%d,v=%d,%s' % (w, h, put_cmd(**kw))
+            cmd = f'a={a},f=24,s=%d,v=%d,%s' % (w, h, put_cmd(**kw))
         else:
-            cmd = 'a=T,f=24,i=%d,s=%d,v=%d,%s' % (imgid, w, h, put_cmd(**kw))
+            cmd = f'a={a},f=24,i=%d,s=%d,v=%d,%s' % (imgid, w, h, put_cmd(**kw))
         data = b'x' * w * h * 3
         res = send_command(screen, cmd, data)
         return imgid, parse_response(res)
@@ -582,6 +583,16 @@ class TestGraphics(BaseTest):
         self.ae(s.grman.image_count, count - 1)
         delete(I=1)
         self.ae(s.grman.image_count, count - 2)
+        cn = 1117
+        li('abc', s=1, v=1, f=24, I=cn)
+        first_id = g.image_for_client_number(cn)['internal_id']
+        li('abc', s=1, v=1, f=24, I=cn)
+        second_id = g.image_for_client_number(cn)['internal_id']
+        self.assertNotEqual(first_id, second_id)
+        count = s.grman.image_count
+        delete(I=cn)
+        self.ae(g.image_for_client_number(cn)['internal_id'], first_id)
+        self.ae(s.grman.image_count, count - 1)
         s.reset()
         self.assertEqual(g.disk_cache.total_size, 0)
 
@@ -1041,10 +1052,25 @@ class TestGraphics(BaseTest):
                 cmd += ',' + ','.join(f'{k}={v}' for k, v in kw.items())
             send_command(s, cmd)
 
+        iid = put_image(s, cw, ch, a='t')[0]
+        self.ae(s.grman.image_count, 1)
+        delete('I', i=iid)
+        self.ae(s.grman.image_count, 0)
+        iid1 = put_image(s, cw, ch, a='t')[0]
+        iid2 = put_image(s, cw, ch, a='t')[0]
+        self.ae(s.grman.image_count, 2)
+        delete('R', x=iid1, y=iid2)
+        self.ae(s.grman.image_count, 0)
+
         put_image(s, cw, ch)
         delete()
         self.ae(s.grman.image_count, 1)
         self.ae(len(layers(s)), 0)
+        delete('A')
+        self.ae(s.grman.image_count, 1)
+        s.reset()
+        self.ae(s.grman.image_count, 0)
+        put_image(s, cw, ch)
         self.ae(s.grman.image_count, 1)
         delete('A')
         self.ae(s.grman.image_count, 0)
@@ -1093,6 +1119,18 @@ class TestGraphics(BaseTest):
         self.ae(put_ref(s, id=iid), (iid, ('ENOENT', f'i={iid}')))
         self.ae(s.grman.image_count, 0)
         self.assertEqual(s.grman.disk_cache.total_size, 0)
+
+        # test delete but not free
+        s.reset()
+        iid = 9999999
+        self.ae(put_image(s, cw, ch, id=iid), (iid, 'OK'))
+        self.ae(put_ref(s, id=iid), (iid, ('OK', f'i={iid}')))
+        self.ae(put_image(s, cw, ch, id=iid+1), (iid+1, 'OK'))
+        self.ae(put_ref(s, id=iid+1), (iid+1, ('OK', f'i={iid+1}')))
+        delete('i', i=iid)
+        self.ae(s.grman.image_count, 2)
+        delete('I', i=iid+1)
+        self.ae(s.grman.image_count, 1)
 
     def test_animation_frame_loading(self):
         s = self.create_screen()
@@ -1200,6 +1238,7 @@ class TestGraphics(BaseTest):
         self.assertIsNone(li(a='d', d='f', i=1))
         img = g.image_for_client_id(1)
         self.assertEqual(img['data'], b'5' * 36)
+        self.ae(g.image_count, 1)
         self.assertIsNone(li(a='d', d='F', i=1))
         self.ae(g.image_count, 0)
         self.assertEqual(g.disk_cache.total_size, 0)

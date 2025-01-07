@@ -26,6 +26,12 @@ A terminal PDF/DJVU/CBR viewer
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 A terminal PDF viewer
 
+.. _tool_fancy_cat:
+
+`fancy-cat <https://github.com/freref/fancy-cat>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A terminal PDF viewer
+
 .. _tool_mdcat:
 
 `mdcat <https://github.com/lunaryorn/mdcat>`_
@@ -100,10 +106,19 @@ base application that uses kitty's graphics protocol for images.
 A text mode WWW browser that supports kitty's graphics protocol to display
 images.
 
+.. _tool_awrit:
+
 `awrit <https://github.com/chase/awrit>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 A full Chromium based web browser running in the terminal using kitty's
 graphics protocol.
+
+.. _tool_chawan:
+
+`chawan <https://sr.ht/~bptato/chawan/>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A text mode WWW browser that supports kitty's graphics protocol to display
+images.
 
 .. _tool_mpv:
 
@@ -132,9 +147,13 @@ protocol
 
 .. _tool_matplotlib:
 
-`matplotlib <https://github.com/jktr/matplotlib-backend-kitty>`_
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Show matplotlib plots directly in kitty
+matplotlib
+^^^^^^^^^^^^^^
+
+There exist multiple backends for matplotlib to draw images directly in kitty.
+
+* `matplotlib-backend-kitty <https://github.com/jktr/matplotlib-backend-kitty>`__
+* `kitcat <https://github.com/mil-ad/kitcat>`__
 
 .. _tool_KittyTerminalImage:
 
@@ -274,6 +293,14 @@ Keyboard based text selection for the kitty scrollback buffer.
 
 Miscellaneous
 ------------------
+
+.. tool_gattino:
+
+`gattino <https://github.com/salvozappa/gattino>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Integrate kitty with an LLM to convert plain language prompts into shell
+commands.
 
 .. tool_kitty_smart_tab:
 

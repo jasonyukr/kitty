@@ -280,6 +280,55 @@ class TestScreen(BaseTest):
         self.ae(s.cursor.x, 1)
 
     def test_resize(self):
+        from kitty.window import as_text
+        def at():
+            return as_text(s, add_history=True)
+        def ac():
+            return s.line(s.cursor.y)[s.cursor.x]
+
+        # test that a wrapped line split by the history buffer is re-stitched
+        s = self.create_screen(cols=4, lines=4, scrollback=4)
+        text = ''
+        for i in range(s.lines + 1):
+            if i == 2:
+                text += 'abcd'
+            else:
+                text += str(i + 1) * s.columns
+        s.draw(text)
+        self.assertTrue(s.historybuf.endswith_wrap())
+        s.cursor.x, s.cursor.y = 1, 1
+        self.ae(ac(), 'b')
+        s.resize(s.lines, s.columns + 2)
+        self.assertTrue(s.historybuf.endswith_wrap())
+        self.ae(str(s.historybuf), '111122')
+        self.ae(at(), text + '\n')
+        # for some reason rewrap_inner moves the cursor by one cell to the right
+        self.ae((s.cursor.x, s.cursor.y), (4, 0))
+        self.ae(ac(), 'c')
+        s = self.create_screen(cols=4, lines=4, scrollback=4)
+        s.draw('1111222'), s.linefeed(), s.carriage_return()
+        s.draw('333344445555')
+        s.resize(s.lines, s.columns + 2)
+        self.ae(str(s.historybuf), '111122')
+        self.ae(str(s.line(0)), '2')
+        self.ae(at(), '1111222\n333344445555\n')
+        s = self.create_screen(cols=4, lines=4, scrollback=4)
+        s.draw('1111😸2'), s.linefeed(), s.carriage_return()
+        s.index(), s.index()
+        s.resize(s.lines, s.columns + 1)
+        self.ae(str(s.historybuf), '1111')
+        self.assertTrue(s.historybuf.endswith_wrap())
+        self.ae(at(), '1111😸2\n\n\n')
+        s = self.create_screen(cols=4, lines=4, scrollback=4)
+        s.draw(text)
+        s.cursor.x, s.cursor.y = 1, 1
+        self.ae(ac(), 'b')
+        s.resize(s.lines, s.columns * 2)
+        self.ae(ac(), 'c')
+        self.ae(str(s.historybuf), '11112222')
+        self.ae(at(), text + '\n\n')
+        self.ae((s.cursor.x, s.cursor.y), (2, 0))
+
         # test that trailing blank line is preserved on resize
         s = self.create_screen(cols=5, lines=5, scrollback=15)
         for i in range(3):
@@ -608,6 +657,7 @@ class TestScreen(BaseTest):
         self.ae(s.text_for_selection(), ('abc  ', 'xy'))
         self.ae(s.text_for_selection(True), ('a\x1b[32mb\x1b[39mc  ', 'xy', '\x1b[m'))
         self.ae(s.text_for_selection(True, True), ('a\x1b[32mb\x1b[39mc', 'xy', '\x1b[m'))
+        # ]]]]]]]]]]]]]]]]]]]]
 
     def test_soft_hyphen(self):
         s = self.create_screen()
@@ -619,17 +669,28 @@ class TestScreen(BaseTest):
 
     def test_variation_selectors(self):
         s = self.create_screen()
-        s.draw('\U0001f610')
-        self.ae(s.cursor.x, 2)
-        s.carriage_return(), s.linefeed()
-        s.draw('\U0001f610\ufe0e')
-        self.ae(s.cursor.x, 1)
-        s.carriage_return(), s.linefeed()
-        s.draw('\u25b6')
-        self.ae(s.cursor.x, 1)
-        s.carriage_return(), s.linefeed()
-        s.draw('\u25b6\ufe0f')
-        self.ae(s.cursor.x, 2)
+        def t(*a):
+            s.reset()
+            for i in range(0, len(a), 2):
+                char, x = a[i], a[i+1]
+                s.draw(char)
+                self.ae(s.cursor.x, x, f'after char: {char!r}')
+        # already wide + VS15
+        t('\U0001f610', 2, '\ufe0e', 1, '\ufe0e', 1)
+        t('\U0001f610\ufe0e', 1, '\ufe0e', 1)
+        # narrow + VS16
+        t('\u25b6', 1, '\ufe0f', 2)
+        t('\u25b6\ufe0f', 2)
+        # wide + VS16
+        t('\u26d4\ufe0f', 2, '\ufe0f', 2)
+        t('\u26d4', 2, '\ufe0f', 2)
+        # narrow + VS15
+        t('\u25b6', 1, '\ufe0e', 1)
+        t('\u25b6\ufe0e', 1)
+        # narrow + VS16 + VS15
+        t('\u25b6', 1, '\ufe0f', 2, '\ufe0e', 2)
+        # wide + VS15 + VS16
+        t('\U0001f610', 2, '\ufe0e', 1, '\ufe0f', 1)
 
     def test_writing_with_cursor_on_trailer_of_wide_character(self):
         s = self.create_screen()
@@ -691,8 +752,8 @@ class TestScreen(BaseTest):
     def test_wrapping_serialization(self):
         from kitty.window import as_text
         s = self.create_screen(cols=2, lines=2, scrollback=2, options={'scrollback_pager_history_size': 128})
-        s.draw('aabbccddeeff')
-        self.ae(as_text(s, add_history=True), 'aabbccddeeff')
+        s.draw('ū̀abbccddeefū̀')
+        self.ae(as_text(s, add_history=True), 'ū̀abbccddeefū̀')
         self.assertNotIn('\n', as_text(s, add_history=True, as_ansi=True))
 
         s = self.create_screen(cols=2, lines=2, scrollback=2, options={'scrollback_pager_history_size': 128})

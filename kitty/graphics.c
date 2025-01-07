@@ -1894,9 +1894,9 @@ remove_ref(Image *img, ImageRef *ref) {
 }
 
 static void
-filter_refs(GraphicsManager *self, const void* data, bool free_images, bool (*filter_func)(const ImageRef*, Image*, const void*, CellPixelSize), CellPixelSize cell, bool only_first_image) {
-    bool matched = false;
+filter_refs(GraphicsManager *self, const void* data, bool free_images, bool (*filter_func)(const ImageRef*, Image*, const void*, CellPixelSize), CellPixelSize cell, bool only_first_image, bool free_only_matched) {
     for (image_map_itr ii = vt_first(&self->images_by_internal_id); !vt_is_end(ii); ) { Image *img = ii.data->val;
+        bool matched = false;
         for (ref_map_itr ri = vt_first(&img->refs_by_internal_id); !vt_is_end(ri); ) { ImageRef *ref = ri.data->val;
             if (filter_func(ref, img, data, cell)) {
                 ri = remove_ref_itr(img, ri);
@@ -1904,7 +1904,7 @@ filter_refs(GraphicsManager *self, const void* data, bool free_images, bool (*fi
                 matched = true;
             } else ri = vt_next(ri);
         }
-        if (!vt_size(&img->refs_by_internal_id) && (free_images || img->client_id == 0)) ii = remove_image_itr(self, ii);
+        if ((!free_only_matched || matched) && !vt_size(&img->refs_by_internal_id) && (free_images || img->client_id == 0)) ii = remove_image_itr(self, ii);
         else ii = vt_next(ii);
         if (only_first_image && matched) break;
     }
@@ -2004,13 +2004,13 @@ void
 grman_remove_cell_images(GraphicsManager *self, int32_t top, int32_t bottom) {
     CellPixelSize dummy = {0};
     int32_t data[] = {top, bottom};
-    filter_refs(self, data, false, cell_image_row_filter_func, dummy, false);
+    filter_refs(self, data, false, cell_image_row_filter_func, dummy, false, true);
 }
 
 void
 grman_remove_all_cell_images(GraphicsManager *self) {
     CellPixelSize dummy = {0};
-    filter_refs(self, NULL, false, cell_image_filter_func, dummy, false);
+    filter_refs(self, NULL, false, cell_image_filter_func, dummy, false, true);
 }
 
 
@@ -2034,7 +2034,7 @@ clear_all_filter_func(const ImageRef *ref UNUSED, Image UNUSED *img, const void 
 
 void
 grman_clear(GraphicsManager *self, bool all, CellPixelSize cell) {
-    filter_refs(self, NULL, true, all ? clear_all_filter_func : clear_filter_func, cell, false);
+    filter_refs(self, NULL, true, all ? clear_all_filter_func : clear_filter_func, cell, false, false);
 }
 
 static bool
@@ -2048,14 +2048,6 @@ static bool
 id_range_filter_func(const ImageRef *ref UNUSED, Image *img, const void *data, CellPixelSize cell UNUSED) {
     const GraphicsCommand *g = data;
     return img->client_id && g->x_offset <= img->client_id && img->client_id <= g->y_offset;
-}
-
-
-static bool
-number_filter_func(const ImageRef *ref, Image *img, const void *data, CellPixelSize cell UNUSED) {
-    const GraphicsCommand *g = data;
-    if (g->image_number && img->client_number == g->image_number) return !g->placement_id || ref->client_id == g->placement_id;
-    return false;
 }
 
 
@@ -2098,9 +2090,25 @@ static void
 handle_delete_command(GraphicsManager *self, const GraphicsCommand *g, Cursor *c, bool *is_dirty, CellPixelSize cell) {
     if (self->currently_loading.loading_for.image_id) free_load_data(&self->currently_loading);
     GraphicsCommand d;
-    bool only_first_image = false;
+    if (!g->placement_id) {
+        // special case freeing of images with no refs by id or number as
+        // filter_refs doesnt handle this
+        Image *img = NULL;
+        switch(g->delete_action) {
+            case 'I': img = img_by_client_id(self, g->id); break;
+            case 'N': img = img_by_client_number(self, g->image_number); break;
+            case 'R': {
+                for (image_map_itr ii = vt_first(&self->images_by_internal_id); !vt_is_end(ii); ) {
+                    img = ii.data->val;
+                    if (id_range_filter_func(NULL, img, g, cell) && !vt_size(&img->refs_by_internal_id)) ii = remove_image_itr(self, ii);
+                    else ii = vt_next(ii);
+                }
+            } img = NULL; break;
+        }
+        if (img && !vt_size(&img->refs_by_internal_id)) { remove_image(self, img); goto end; }
+    }
     switch (g->delete_action) {
-#define I(u, data, func) filter_refs(self, data, g->delete_action == u, func, cell, only_first_image); *is_dirty = true; break
+#define I(u, data, func) filter_refs(self, data, g->delete_action == u, func, cell, false, true); *is_dirty = true; break
 #define D(l, u, data, func) case l: case u: I(u, data, func)
 #define G(l, u, func) D(l, u, g, func)
         case 0:
@@ -2117,16 +2125,27 @@ handle_delete_command(GraphicsManager *self, const GraphicsCommand *g, Cursor *c
             d.x_offset = c->x + 1; d.y_offset = c->y + 1;
             I('C', &d, point_filter_func);
         case 'n':
-        case 'N':
-            only_first_image = true;
-            I('N', g, number_filter_func);
+        case 'N': {
+            Image *img = img_by_client_number(self, g->image_number);
+            if (img) {
+                for (ref_map_itr ri = vt_first(&img->refs_by_internal_id); !vt_is_end(ri); ) { ImageRef *ref = ri.data->val;
+                    if (!g->placement_id || g->placement_id == ref->client_id) {
+                        ri = remove_ref_itr(img, ri);
+                        self->layers_dirty = true;
+                    } else ri = vt_next(ri);
+                }
+                if (!vt_size(&img->refs_by_internal_id) && (g->delete_action == 'N' || img->client_id == 0)) remove_image(self, img);
+            }
+        } break;
         case 'f':
-        case 'F':
-            if (handle_delete_frame_command(self, g, is_dirty) != NULL) {
-                filter_refs(self, g, true, id_filter_func, cell, true);
+        case 'F': {
+            Image *img = handle_delete_frame_command(self, g, is_dirty);
+            if (img != NULL) {
+                remove_image(self, img);
                 *is_dirty = true;
             }
             break;
+        }
         default:
             REPORT_ERROR("Unknown graphics command delete action: %c", g->delete_action);
             break;
@@ -2134,6 +2153,7 @@ handle_delete_command(GraphicsManager *self, const GraphicsCommand *g, Cursor *c
 #undef D
 #undef I
     }
+end:
     if (!vt_size(&self->images_by_internal_id) && self->render_data.count) self->render_data.count = 0;
 }
 

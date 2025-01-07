@@ -8,6 +8,7 @@
 #include "cleanup.h"
 #include "monotonic.h"
 #include "charsets.h"
+#include "control-codes.h"
 #include <structmember.h>
 #include "glfw-wrapper.h"
 #include "gl.h"
@@ -46,16 +47,22 @@ get_platform_dependent_config_values(void *glfw_window) {
     }
 }
 
-static void
-on_system_color_scheme_change(GLFWColorScheme appearance) {
+static const char*
+appearance_name(GLFWColorScheme appearance) {
     const char *which = NULL;
     switch (appearance) {
         case GLFW_COLOR_SCHEME_NO_PREFERENCE: which = "no_preference"; break;
         case GLFW_COLOR_SCHEME_DARK: which = "dark"; break;
         case GLFW_COLOR_SCHEME_LIGHT: which = "light"; break;
     }
-    debug("system color-scheme changed to: %s\n", which);
-    call_boss(on_system_color_scheme_change, "s", which);
+    return which;
+}
+
+static void
+on_system_color_scheme_change(GLFWColorScheme appearance, bool is_initial_value) {
+    const char *which = appearance_name(appearance);
+    debug("system color-scheme changed to: %s is_initial_value: %d\n", which, is_initial_value);
+    call_boss(on_system_color_scheme_change, "sO", which, is_initial_value ? Py_True : Py_False);
 }
 
 static void
@@ -65,7 +72,7 @@ strip_csi_(const char *title, char *buf, size_t bufsz) {
     *dest = 0; *last = 0;
 
     for (; *title && dest < last; title++) {
-        const char ch = *title;
+        const unsigned char ch = *title;
         switch (state) {
             case NORMAL: {
                 if (ch == 0x1b) { state = IN_ESC; }
@@ -73,10 +80,16 @@ strip_csi_(const char *title, char *buf, size_t bufsz) {
             } break;
             case IN_ESC: {
                 if (ch == '[') { state = IN_CSI; }
-                else { state = NORMAL; }
+                else {
+                    if (ch >= ' ' && ch != DEL) *(dest++) = ch;
+                    state = NORMAL;
+                }
             } break;
             case IN_CSI: {
-                if (!(('0' <= ch && ch <= '9') || ch == ';' || ch == ':')) state = NORMAL;
+                if (!(('0' <= ch && ch <= '9') || ch == ';' || ch == ':')) {
+                    if (ch > DEL) *(dest++) = ch;  // UTF-8 multibyte
+                    state = NORMAL;
+                }
             } break;
         }
     }
@@ -1023,6 +1036,7 @@ edge_spacing(GLFWEdge which) {
         case GLFW_EDGE_BOTTOM: edge = "bottom"; break;
         case GLFW_EDGE_LEFT: edge = "left"; break;
         case GLFW_EDGE_RIGHT: edge = "right"; break;
+        case GLFW_EDGE_NONE: edge = "left"; break; // GLFW_EDGE_NONE is considered as "top left"
     }
     if (!edge_spacing_func) {
         log_error("Attempt to call edge_spacing() without first setting edge_spacing_func");
@@ -1053,14 +1067,23 @@ calculate_layer_shell_window_size(
         if (!*height) *height = monitor_height;
         double spacing = edge_spacing(GLFW_EDGE_LEFT) + edge_spacing(GLFW_EDGE_RIGHT);
         spacing *= xdpi / 72.;
-        spacing += (fonts_data->cell_width * config->size_in_cells) / xscale;
+        spacing += (fonts_data->cell_width * config->x_size_in_cells) / xscale;
         *width = (uint32_t)(1. + spacing);
-    } else {
+    } else if (config->edge == GLFW_EDGE_TOP || config->edge == GLFW_EDGE_BOTTOM) {
         if (!*width) *width = monitor_width;
         double spacing = edge_spacing(GLFW_EDGE_TOP) + edge_spacing(GLFW_EDGE_BOTTOM);
         spacing *= ydpi / 72.;
-        spacing += (fonts_data->cell_height * config->size_in_cells) / yscale;
+        spacing += (fonts_data->cell_height * config->y_size_in_cells) / yscale;
         *height = (uint32_t)(1. + spacing);
+    } else {
+        double spacing_x = edge_spacing(GLFW_EDGE_LEFT);
+        spacing_x *= xdpi / 72.;
+        spacing_x += (fonts_data->cell_width * config->x_size_in_cells) / xscale;
+        double spacing_y = edge_spacing(GLFW_EDGE_TOP);
+        spacing_y *= ydpi / 72.;
+        spacing_y += (fonts_data->cell_height * config->y_size_in_cells) / yscale;
+        *width = (uint32_t)(1. + spacing_x);
+        *height = (uint32_t)(1. + spacing_y);
     }
 }
 
@@ -1072,7 +1095,14 @@ translate_layer_shell_config(PyObject *p, GLFWLayerShellConfig *ans) {
     A(type, PyLong_Check, PyLong_AsLong);
     A(edge, PyLong_Check, PyLong_AsLong);
     A(focus_policy, PyLong_Check, PyLong_AsLong);
-    A(size_in_cells, PyLong_Check, PyLong_AsLong);
+    A(x_size_in_cells, PyLong_Check, PyLong_AsLong);
+    A(y_size_in_cells, PyLong_Check, PyLong_AsLong);
+    A(requested_top_margin, PyLong_Check, PyLong_AsLong);
+    A(requested_left_margin, PyLong_Check, PyLong_AsLong);
+    A(requested_bottom_margin, PyLong_Check, PyLong_AsLong);
+    A(requested_right_margin, PyLong_Check, PyLong_AsLong);
+    A(requested_exclusive_zone, PyLong_Check, PyLong_AsLong);
+    A(override_exclusive_zone, PyBool_Check, PyLong_AsLong);
 #undef A
 #define A(attr) { \
     RAII_PyObject(attr, PyObject_GetAttrString(p, #attr)); if (attr == NULL) return false; \
@@ -1517,6 +1547,17 @@ glfw_get_physical_dpi(PYNOARG) {
     GLFWmonitor *m = glfwGetPrimaryMonitor();
     if (m == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to get primary monitor"); return NULL; }
     return get_physical_dpi(m);
+}
+
+static PyObject*
+glfw_get_system_color_theme(PyObject UNUSED *self, PyObject *args) {
+    int query_if_unintialized = 1;
+    if (!PyArg_ParseTuple(args, "|p", &query_if_unintialized)) return NULL;
+    if (!glfwGetCurrentSystemColorTheme) {
+        PyErr_SetString(PyExc_RuntimeError, "must initialize GFLW before calling this function"); return NULL;
+    }
+    const char *which = appearance_name(glfwGetCurrentSystemColorTheme(query_if_unintialized));
+    return PyUnicode_FromString(which);
 }
 
 static PyObject*
@@ -2306,6 +2347,7 @@ static PyMethodDef module_methods[] = {
     {"glfw_terminate", (PyCFunction)glfw_terminate, METH_NOARGS, ""},
     {"glfw_get_physical_dpi", (PyCFunction)glfw_get_physical_dpi, METH_NOARGS, ""},
     {"glfw_get_key_name", (PyCFunction)glfw_get_key_name, METH_VARARGS, ""},
+    {"glfw_get_system_color_theme", (PyCFunction)glfw_get_system_color_theme, METH_VARARGS, ""},
     {"glfw_primary_monitor_size", (PyCFunction)primary_monitor_size, METH_NOARGS, ""},
     {"glfw_primary_monitor_content_scale", (PyCFunction)primary_monitor_content_scale, METH_NOARGS, ""},
     {NULL, NULL, 0, NULL}        /* Sentinel */
@@ -2333,9 +2375,9 @@ init_glfw(PyObject *m) {
     ADDC(GLFW_REPEAT);
     ADDC(true); ADDC(false);
     ADDC(GLFW_PRIMARY_SELECTION); ADDC(GLFW_CLIPBOARD);
-    ADDC(GLFW_LAYER_SHELL_NONE); ADDC(GLFW_LAYER_SHELL_PANEL); ADDC(GLFW_LAYER_SHELL_BACKGROUND);
+    ADDC(GLFW_LAYER_SHELL_NONE); ADDC(GLFW_LAYER_SHELL_PANEL); ADDC(GLFW_LAYER_SHELL_BACKGROUND); ADDC(GLFW_LAYER_SHELL_TOP); ADDC(GLFW_LAYER_SHELL_OVERLAY);
     ADDC(GLFW_FOCUS_NOT_ALLOWED); ADDC(GLFW_FOCUS_EXCLUSIVE); ADDC(GLFW_FOCUS_ON_DEMAND);
-    ADDC(GLFW_EDGE_TOP); ADDC(GLFW_EDGE_BOTTOM); ADDC(GLFW_EDGE_LEFT); ADDC(GLFW_EDGE_RIGHT);
+    ADDC(GLFW_EDGE_TOP); ADDC(GLFW_EDGE_BOTTOM); ADDC(GLFW_EDGE_LEFT); ADDC(GLFW_EDGE_RIGHT); ADDC(GLFW_EDGE_NONE)
     ADDC(GLFW_COLOR_SCHEME_NO_PREFERENCE); ADDC(GLFW_COLOR_SCHEME_DARK); ADDC(GLFW_COLOR_SCHEME_LIGHT);
 
     /* start glfw functional keys (auto generated by gen-key-constants.py do not edit) */

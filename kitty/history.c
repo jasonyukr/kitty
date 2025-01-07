@@ -114,7 +114,7 @@ pagerhist_clear(HistoryBuf *self) {
 }
 
 static HistoryBuf*
-create_historybuf(PyTypeObject *type, unsigned int xnum, unsigned int ynum, unsigned int pagerhist_sz) {
+create_historybuf(PyTypeObject *type, unsigned int xnum, unsigned int ynum, unsigned int pagerhist_sz, TextCache *tc) {
     if (xnum == 0 || ynum == 0) {
         PyErr_SetString(PyExc_ValueError, "Cannot create an empty history buffer");
         return NULL;
@@ -125,7 +125,8 @@ create_historybuf(PyTypeObject *type, unsigned int xnum, unsigned int ynum, unsi
         self->ynum = ynum;
         self->num_segments = 0;
         add_segment(self);
-        self->line = alloc_line();
+        self->text_cache = tc_incref(tc);
+        self->line = alloc_line(self->text_cache);
         self->line->xnum = xnum;
         self->pagerhist = alloc_pagerhist(pagerhist_sz);
     }
@@ -136,7 +137,10 @@ static PyObject *
 new_history_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
     unsigned int xnum = 1, ynum = 1, pagerhist_sz = 0;
     if (!PyArg_ParseTuple(args, "II|I", &ynum, &xnum, &pagerhist_sz)) return NULL;
-    HistoryBuf *ans = create_historybuf(type, xnum, ynum, pagerhist_sz);
+    TextCache *tc = tc_alloc();
+    if (!tc) return PyErr_NoMemory();
+    HistoryBuf *ans = create_historybuf(type, xnum, ynum, pagerhist_sz, tc);
+    tc_decref(tc);
     return (PyObject*)ans;
 }
 
@@ -146,6 +150,7 @@ dealloc(HistoryBuf* self) {
     for (size_t i = 0; i < self->num_segments; i++) free_segment(self->segments + i);
     free(self->segments);
     free_pagerhist(self);
+    tc_decref(self->text_cache);
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
@@ -260,7 +265,7 @@ pagerhist_push(HistoryBuf *self, ANSIBuf *as_ansi_buf) {
     PagerHistoryBuf *ph = self->pagerhist;
     if (!ph) return;
     const GPUCell *prev_cell = NULL;
-    Line l = {.xnum=self->xnum};
+    Line l = {.xnum=self->xnum, .text_cache=self->text_cache};
     init_line(self, self->start_of_data, &l);
     line_as_ansi(&l, as_ansi_buf, &prev_cell, 0, l.xnum, 0);
     pagerhist_write_bytes(ph, (const uint8_t*)"\x1b[m", 3);
@@ -347,7 +352,7 @@ push(HistoryBuf *self, PyObject *args) {
 static PyObject*
 as_ansi(HistoryBuf *self, PyObject *callback) {
 #define as_ansi_doc "as_ansi(callback) -> The contents of this buffer as ANSI escaped text. callback is called with each successive line."
-    Line l = {.xnum=self->xnum};
+    Line l = {.xnum=self->xnum, .text_cache=self->text_cache};
     const GPUCell *prev_cell = NULL;
     ANSIBuf output = {0};
     for(unsigned int i = 0; i < self->count; i++) {
@@ -369,9 +374,6 @@ end:
     if (PyErr_Occurred()) return NULL;
     Py_RETURN_NONE;
 }
-
-static Line*
-get_line(HistoryBuf *self, index_type y, Line *l) { init_line(self, index_of(self, self->count - y - 1), l); return l; }
 
 static char_type
 pagerhist_remove_char(PagerHistoryBuf *ph, unsigned *count, uint8_t record[8]) {
@@ -499,6 +501,12 @@ typedef struct {
 } GetLineWrapper;
 
 static Line*
+get_line(HistoryBuf *self, index_type y, Line *l) {
+    init_line(self, index_of(self, self->count - y - 1), l);
+    return l;
+}
+
+static Line*
 get_line_wrapper(void *x, int y) {
     GetLineWrapper *glw = x;
     get_line(glw->self, y, &glw->line);
@@ -509,6 +517,7 @@ PyObject*
 as_text_history_buf(HistoryBuf *self, PyObject *args, ANSIBuf *output) {
     GetLineWrapper glw = {.self=self};
     glw.line.xnum = self->xnum;
+    glw.line.text_cache = self->text_cache;
     PyObject *ans = as_text_generic(args, &glw, get_line_wrapper, self->count, output, true);
     return ans;
 }
@@ -534,6 +543,24 @@ pagerhist_rewrap(HistoryBuf *self, PyObject *xnum) {
     Py_RETURN_NONE;
 }
 
+static PyObject*
+is_continued(HistoryBuf *self, PyObject *val) {
+#define is_continued_doc "is_continued(y) -> Whether the line y is continued or not"
+    unsigned long y = PyLong_AsUnsignedLong(val);
+    if (y >= self->count) { PyErr_SetString(PyExc_ValueError, "Out of bounds."); return NULL; }
+    get_line(self, y, self->line);
+    if (self->line->attrs.is_continued) { Py_RETURN_TRUE; }
+    Py_RETURN_FALSE;
+}
+
+static PyObject*
+endswith_wrap(HistoryBuf *self, PyObject *val UNUSED) {
+#define endswith_wrap_doc "endswith_wrap() -> Whether the last line is wrapped at the end of the buffer"
+    if (history_buf_endswith_wrap(self)) { Py_RETURN_TRUE; }
+    Py_RETURN_FALSE;
+}
+
+
 
 // Boilerplate {{{
 static PyObject* rewrap(HistoryBuf *self, PyObject *args);
@@ -541,6 +568,8 @@ static PyObject* rewrap(HistoryBuf *self, PyObject *args);
 
 static PyMethodDef methods[] = {
     METHOD(line, METH_O)
+    METHOD(is_continued, METH_O)
+    METHOD(endswith_wrap, METH_NOARGS)
     METHOD(as_ansi, METH_O)
     METHODB(pagerhist_write, METH_O),
     METHODB(pagerhist_rewrap, METH_O),
@@ -574,8 +603,8 @@ PyTypeObject HistoryBuf_Type = {
 
 INIT_TYPE(HistoryBuf)
 
-HistoryBuf *alloc_historybuf(unsigned int lines, unsigned int columns, unsigned int pagerhist_sz) {
-    return create_historybuf(&HistoryBuf_Type, columns, lines, pagerhist_sz);
+HistoryBuf *alloc_historybuf(unsigned int lines, unsigned int columns, unsigned int pagerhist_sz, TextCache *tc) {
+    return create_historybuf(&HistoryBuf_Type, columns, lines, pagerhist_sz, tc);
 }
 // }}}
 

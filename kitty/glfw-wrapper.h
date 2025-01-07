@@ -1038,9 +1038,9 @@ typedef struct GLFWkeyevent
     bool fake_event_on_focus_change;
 } GLFWkeyevent;
 
-typedef enum { GLFW_LAYER_SHELL_NONE, GLFW_LAYER_SHELL_BACKGROUND, GLFW_LAYER_SHELL_PANEL } GLFWLayerShellType;
+typedef enum { GLFW_LAYER_SHELL_NONE, GLFW_LAYER_SHELL_BACKGROUND, GLFW_LAYER_SHELL_PANEL, GLFW_LAYER_SHELL_TOP, GLFW_LAYER_SHELL_OVERLAY } GLFWLayerShellType;
 
-typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT } GLFWEdge;
+typedef enum { GLFW_EDGE_TOP, GLFW_EDGE_BOTTOM, GLFW_EDGE_LEFT, GLFW_EDGE_RIGHT, GLFW_EDGE_NONE } GLFWEdge;
 
 typedef enum { GLFW_FOCUS_NOT_ALLOWED, GLFW_FOCUS_EXCLUSIVE, GLFW_FOCUS_ON_DEMAND} GLFWFocusPolicy;
 
@@ -1049,7 +1049,14 @@ typedef struct GLFWLayerShellConfig {
     GLFWEdge edge;
     char output_name[64];
     GLFWFocusPolicy focus_policy;
-    unsigned size_in_cells;
+    unsigned x_size_in_cells;
+    unsigned y_size_in_cells;
+    unsigned requested_top_margin;
+    unsigned requested_left_margin;
+    unsigned requested_bottom_margin;
+    unsigned requested_right_margin;
+    int requested_exclusive_zone;
+    unsigned override_exclusive_zone;
     void (*size_callback)(GLFWwindow *window, const struct GLFWLayerShellConfig *config, unsigned monitor_width, unsigned monitor_height, uint32_t *width, uint32_t *height);
 } GLFWLayerShellConfig;
 
@@ -1167,16 +1174,17 @@ typedef void (* GLFWapplicationclosefun)(int);
  *
  *  This is the function pointer type for system color theme changes.
  *  @code
- *  void function_name(int theme_type)
+ *  void function_name(GLFWColorScheme theme_type, bool is_initial_value)
  *  @endcode
  *
  *  @param[in] theme_type 0 for unknown, 1 for dark and 2 for light
+ *  @param[in] is_initial_value true if this is the initial read of the color theme on systems where it is asynchronous such as Linux
  *
  *  @sa @ref glfwSetSystemColorThemeChangeCallback
  *
  *  @ingroup window
  */
-typedef void (* GLFWsystemcolorthemechangefun)(GLFWColorScheme);
+typedef void (* GLFWsystemcolorthemechangefun)(GLFWColorScheme, bool);
 
 
 /*! @brief The function pointer type for window content refresh callbacks.
@@ -2009,7 +2017,7 @@ typedef GLFWsystemcolorthemechangefun (*glfwSetSystemColorThemeChangeCallback_fu
 GFW_EXTERN glfwSetSystemColorThemeChangeCallback_func glfwSetSystemColorThemeChangeCallback_impl;
 #define glfwSetSystemColorThemeChangeCallback glfwSetSystemColorThemeChangeCallback_impl
 
-typedef GLFWColorScheme (*glfwGetCurrentSystemColorTheme_func)(void);
+typedef GLFWColorScheme (*glfwGetCurrentSystemColorTheme_func)(bool);
 GFW_EXTERN glfwGetCurrentSystemColorTheme_func glfwGetCurrentSystemColorTheme_impl;
 #define glfwGetCurrentSystemColorTheme glfwGetCurrentSystemColorTheme_impl
 
