@@ -89,6 +89,7 @@ from .fast_data_types import (
     wakeup_main_loop,
 )
 from .keys import keyboard_mode_name, mod_mask
+from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
 from .types import MouseEvent, OverlayType, WindowGeometry, ac, run_once
@@ -293,6 +294,7 @@ class Watchers:
     on_set_user_var: list[Watcher]
     on_title_change: list[Watcher]
     on_cmd_startstop: list[Watcher]
+    on_color_scheme_preference_change: list[Watcher]
 
     def __init__(self) -> None:
         self.on_resize = []
@@ -301,6 +303,7 @@ class Watchers:
         self.on_set_user_var = []
         self.on_title_change = []
         self.on_cmd_startstop = []
+        self.on_color_scheme_preference_change = []
 
     def add(self, others: 'Watchers') -> None:
         def merge(base: list[Watcher], other: list[Watcher]) -> None:
@@ -313,10 +316,12 @@ class Watchers:
         merge(self.on_set_user_var, others.on_set_user_var)
         merge(self.on_title_change, others.on_title_change)
         merge(self.on_cmd_startstop, others.on_cmd_startstop)
+        merge(self.on_color_scheme_preference_change, others.on_color_scheme_preference_change)
 
     def clear(self) -> None:
         del self.on_close[:], self.on_resize[:], self.on_focus_change[:]
         del self.on_set_user_var[:], self.on_title_change[:], self.on_cmd_startstop[:]
+        del self.on_color_scheme_preference_change[:]
 
     def copy(self) -> 'Watchers':
         ans = Watchers()
@@ -326,11 +331,12 @@ class Watchers:
         ans.on_set_user_var = self.on_set_user_var[:]
         ans.on_title_change = self.on_title_change[:]
         ans.on_cmd_startstop = self.on_cmd_startstop[:]
+        ans.on_color_scheme_preference_change = self.on_color_scheme_preference_change[:]
         return ans
 
     @property
     def has_watchers(self) -> bool:
-        return bool(self.on_close or self.on_resize or self.on_focus_change
+        return bool(self.on_close or self.on_resize or self.on_focus_change or self.on_color_scheme_preference_change
                     or self.on_set_user_var or self.on_title_change or self.on_cmd_startstop)
 
 
@@ -631,6 +637,7 @@ class Window:
         self.keys_redirected_till_ready_from: int = 0
         self.last_focused_at = 0.
         self.is_focused: bool = False
+        self.progress = Progress()
         self.last_resized_at = 0.
         self.started_at = monotonic()
         self.created_at = time_ns()
@@ -1111,13 +1118,29 @@ class Window:
                 return  # unknown OSC 777
             raw_data = raw_data[len('notify;'):]
         if osc_code == 9 and raw_data.startswith('4;'):
-            # This is probably the Windows Terminal "progress reporting" conflicting
+            # This is probably the ConEmu "progress reporting" conflicting
             # implementation which sadly some thoughtless people have
-            # implemented in unix CLI programs. So ignore it rather than
-            # spamming the user with continuous notifications. See for example:
-            # https://github.com/kovidgoyal/kitty/issues/8011
+            # implemented in unix CLI programs.
+            # See for example: https://github.com/kovidgoyal/kitty/issues/8011
+            try:
+                parts = tuple(map(int, raw_data.split(';')))[1:]
+            except Exception:
+                log_error(f'Ignoring malmormed OSC 9;4 progress report: {raw_data!r}')
+                return
+            self.progress.update(*parts[:2])
+            if (tab := self.tabref()) is not None:
+                tab.update_progress()
+            self.clear_progress_if_needed()
             return
         get_boss().notification_manager.handle_notification_cmd(self.id, osc_code, raw_data)
+
+    def clear_progress_if_needed(self, timer_id: Optional[int] = None) -> None:
+        # Clear stuck or completed progress
+        if self.progress.clear_progress():
+            if (tab := self.tabref()) is not None:
+                tab.update_progress()
+        else:
+            add_timer(self.clear_progress_if_needed, 1.0, False)
 
     def on_mouse_event(self, event: dict[str, Any]) -> bool:
         event['mods'] = event.get('mods', 0) & mod_mask
@@ -1327,15 +1350,21 @@ class Window:
         if dirtied:
             self.screen.mark_as_dirty()
         if default_bg_changed:
-            get_boss().default_bg_changed_for(self.id)
+            get_boss().default_bg_changed_for(self.id, via_escape_code=True)
 
-    def on_color_scheme_preference_change(self) -> None:
-        if self.screen.color_preference_notification:
+    @property
+    def is_dark(self) -> bool:
+        return self.screen.color_profile.default_bg.is_dark
+
+    def on_color_scheme_preference_change(self, via_escape_code: bool = False) -> None:
+        if self.screen.color_preference_notification and not via_escape_code:
             self.report_color_scheme_preference()
+        self.call_watchers(self.watchers.on_color_scheme_preference_change, {
+            'is_dark': self.is_dark, 'via_escape_code': via_escape_code
+        })
 
     def report_color_scheme_preference(self) -> None:
-        cp = self.screen.color_profile
-        n = 1 if cp.default_bg.is_dark else 2
+        n = 1 if self.is_dark else 2
         self.screen.send_escape_code_to_child(ESC_CSI, f'?997;{n}n')
 
     def set_color_table_color(self, code: int, bvalue: Optional[memoryview] = None) -> None:

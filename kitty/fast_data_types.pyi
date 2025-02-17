@@ -821,8 +821,8 @@ class ColorProfile:
 
     def __init__(self, opts: Optional[Options] = None): ...
 
-    def as_dict(self) -> Dict[str, int | None | tuple[tuple[Color, float], ...]]:
-        pass
+    def as_dict(self) -> Dict[str, int | None | tuple[tuple[Color, float], ...]]: ...
+    def basic_colors(self) -> Dict[str, int | None | tuple[tuple[Color, float], ...]]: ...
 
     def as_color(self, val: int) -> Optional[Color]:
         pass
@@ -1588,10 +1588,6 @@ def shm_unlink(name: str) -> None:
 
 
 def sigqueue(pid: int, signal: int, value: int) -> None:
-    pass
-
-
-def random_unix_socket() -> int:
     pass
 
 

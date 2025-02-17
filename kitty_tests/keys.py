@@ -441,6 +441,9 @@ class TestKeys(BaseTest):
         tq = partial(enc, key_encoding_flags=0b11)
         ae(tq(defines.GLFW_FKEY_BACKSPACE), '\x7f')
         ae(tq(defines.GLFW_FKEY_BACKSPACE, action=release), '')
+        tq = partial(enc, key_encoding_flags=0b11, mods=num_lock|caps_lock)
+        ae(tq(defines.GLFW_FKEY_ENTER), '\r')
+        ae(tq(defines.GLFW_FKEY_ENTER, action=release), '')
 
         # test alternate key reporting
         aq = partial(enc, key_encoding_flags=0b100)
@@ -458,6 +461,7 @@ class TestKeys(BaseTest):
         ae(kq(defines.GLFW_FKEY_UP), '\x1b[A')
         ae(kq(defines.GLFW_FKEY_LEFT_SHIFT), csi(num=defines.GLFW_FKEY_LEFT_SHIFT))
         ae(kq(defines.GLFW_FKEY_ENTER), '\x1b[13u')
+        ae(kq(defines.GLFW_FKEY_ENTER, mods=ctrl), '\x1b[13;5u')
         ae(kq(defines.GLFW_FKEY_TAB), '\x1b[9u')
         ae(kq(defines.GLFW_FKEY_BACKSPACE), '\x1b[127u')
 

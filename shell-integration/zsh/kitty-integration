@@ -89,6 +89,13 @@ _ksi_deferred_init() {
     opt=(${(s: :)KITTY_SHELL_INTEGRATION})
     builtin unset KITTY_SHELL_INTEGRATION
 
+    if [[ -n "$SSH_KITTEN_KITTY_DIR" ]]; then
+        if [[ ! "$PATH" =~ (^|:)${SSH_KITTEN_KITTY_DIR}(:|$) ]] && [[ -z "$(builtin command -v kitten)" ]]; then
+            builtin export PATH="${PATH}:${SSH_KITTEN_KITTY_DIR}"
+        fi
+        builtin unset SSH_KITTEN_KITTY_DIR
+    fi
+
     # The directory where kitty-integration is located: /.../shell-integration/zsh.
     builtin local self_dir="${functions_source[_ksi_deferred_init]:A:h}"
     # The directory with _kitty. We store it in a directory of its own rather than
@@ -260,11 +267,10 @@ _ksi_deferred_init() {
         fi
 
         if [[ "$is_ssh_session" == "y" ]]; then
-            # show the hostname via %m for SSH sessions
             functions[_ksi_precmd]+="
-                builtin print -Prnu $_ksi_fd \$'\\e]2;'\"%m: \${(%):-%(4~|…/%3~|%~)}\"\$'\\a'"
+                builtin print -rnu $_ksi_fd \$'\\e]2;'\"\${(V)\${HOST-}/%.*/}: \${(%):-%(4~|…/%3~|%~)}\"\$'\\a'"
             functions[_ksi_preexec]+="
-                builtin print -Prnu $_ksi_fd \$'\\e]2;'\"%m: \${(V)1}\"\$'\\a'"
+                builtin print -rnu $_ksi_fd \$'\\e]2;'\"\${(V)\${HOST-}/%.*/}: \${(V)1}\"\$'\\a'"
         else
             functions[_ksi_precmd]+="
                 builtin print -rnu $_ksi_fd \$'\\e]2;'\"\${(%):-%(4~|…/%3~|%~)}\"\$'\\a'"

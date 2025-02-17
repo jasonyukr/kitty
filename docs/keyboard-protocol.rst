@@ -34,11 +34,12 @@ inside the kitty terminal to report key events.
 
 In addition to kitty, this protocol is also implemented in:
 
-* The `foot terminal <https://codeberg.org/dnkl/foot/issues/319>`__
-* The `WezTerm terminal <https://wezfurlong.org/wezterm/config/lua/config/enable_kitty_keyboard.html>`__
 * The `alacritty terminal <https://github.com/alacritty/alacritty/pull/7125>`__
-* The `rio terminal <https://github.com/raphamorim/rio/commit/cd463ca37677a0fc48daa8795ea46dadc92b1e95>`__
+* The `ghostty terminal <https://ghostty.org>`__
+* The `foot terminal <https://codeberg.org/dnkl/foot/issues/319>`__
 * The `iTerm2 terminal <https://gitlab.com/gnachman/iterm2/-/issues/10017>`__
+* The `rio terminal <https://github.com/raphamorim/rio/commit/cd463ca37677a0fc48daa8795ea46dadc92b1e95>`__
+* The `WezTerm terminal <https://wezfurlong.org/wezterm/config/lua/config/enable_kitty_keyboard.html>`__
 
 Libraries implementing this protocol:
 
@@ -336,7 +337,7 @@ the bytes used for CSI control codes.
 Turning on this flag will cause the terminal to report the :kbd:`Esc`, :kbd:`alt+key`,
 :kbd:`ctrl+key`, :kbd:`ctrl+alt+key`, :kbd:`shift+alt+key` keys using ``CSI u`` sequences instead
 of legacy ones. Here key is any ASCII key as described in :ref:`legacy_text`.
-Additionally, all keypad keys will be reported as separate keys with ``CSI u``
+Additionally, all non text keypad keys will be reported as separate keys with ``CSI u``
 encoding, using dedicated numbers from the :ref:`table below <functional>`.
 
 With this flag turned on, all key events that do not generate text are
@@ -379,8 +380,13 @@ Report alternate keys
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 This progressive enhancement (``0b100``) causes the terminal to report
-alternate key values in addition to the main value, to aid in shortcut
-matching. See :ref:`key_codes` for details on how these are reported.
+alternate key values *in addition* to the main value, to aid in shortcut
+matching. See :ref:`key_codes` for details on how these are reported. Note that
+this flag is a pure enhancement to the form of the escape code used to
+represent key events, only key events represented as escape codes due to the
+other enhancements in effect will be affected by this enhancement. In other
+words, only if a key event was already going to be represented as an escape
+code due to one of the other enhancements will this enhancement affect it.
 
 .. _report_all_keys:
 
@@ -399,17 +405,20 @@ Report associated text enhancement below.
 
 Additionally, with this mode, events for pressing modifier keys are reported.
 Note that *all* keys are reported as escape codes, including :kbd:`Enter`,
-:kbd:`Tab`, :kbd:`Backspace` etc.
+:kbd:`Tab`, :kbd:`Backspace` etc. Note that this enhancement implies all keys
+are automatically disambiguated as well, since they are represented in their
+canonical escape code form.
 
 .. _report_text:
 
 Report associated text
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This progressive enhancement (``0b10000``) causes key events that generate text
-to be reported as ``CSI u`` escape codes with the text embedded in the escape
-code. See :ref:`text_as_codepoints` above for details on the mechanism.
-
+This progressive enhancement (``0b10000``) *additionally* causes key events that
+generate text to be reported as ``CSI u`` escape codes with the text embedded
+in the escape code. See :ref:`text_as_codepoints` above for details on the
+mechanism. Note that this flag is an enhancement to :ref:`report_all_keys`
+and is undefined if used without it.
 
 .. _detection:
 

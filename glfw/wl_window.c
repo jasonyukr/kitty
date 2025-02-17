@@ -520,7 +520,7 @@ surface_preferred_buffer_scale(void *data, struct wl_surface *surface UNUSED, in
     if ((int)window->wl.integer_scale.preferred == scale && window->wl.window_fully_created) return;
     debug("Preferred integer buffer scale changed to: %d for window %llu\n", scale, window->id);
     window->wl.integer_scale.preferred = scale;
-    window->wl.window_fully_created = true;
+    window->wl.window_fully_created = window->wl.once.surface_configured;
     if (!window->wl.fractional_scale) apply_scale_changes(window, true, true);
 }
 
@@ -547,11 +547,12 @@ fractional_scale_preferred_scale(void *data, struct wp_fractional_scale_v1 *wp_f
     if (scale == window->wl.fractional_scale && window->wl.window_fully_created) return;
     debug("Fractional scale requested: %u/120 = %.2f for window %llu\n", scale, scale / 120., window->id);
     window->wl.fractional_scale = scale;
-    // Hyprland sends a fraction scale = 1 event before configuring the xdg surface and then another after with the correct scale
-    // labwc doesnt support preferred buffer scale, so we assume it's done fucking around with scales even if the scale is 120
-    // As far as I can tell from googling labwc has no way to specify scales other
-    // than 1 anyway, so no way to test what it will do in such cases. Sigh, more half baked Wayland shit.
-    window->wl.window_fully_created = window->wl.once.surface_configured || scale != 120 || !_glfw.wl.has_preferred_buffer_scale;
+    // niri and up-to-date mutter and up-to-date kwin all send the fractional
+    // scale before configure (as of Jan 2025). sway as of 1.10 and Hyprland send it after configure.
+    // https://github.com/hyprwm/Hyprland/issues/9126
+    // labwc doesnt support preferred buffer scale and seems to send only a
+    // single fraction scale event before configure https://github.com/kovidgoyal/kitty/issues/7540
+    window->wl.window_fully_created = window->wl.once.surface_configured;
     apply_scale_changes(window, true, true);
 }
 
@@ -756,6 +757,15 @@ static const struct xdg_toplevel_listener xdgToplevelListener = {
 };
 
 static void
+update_fully_created_on_configure(_GLFWwindow *window) {
+    // See fractional_scale_preferred_scale() for logic
+    if (!window->wl.window_fully_created) {
+        window->wl.window_fully_created = window->wl.once.fractional_scale_received;
+        if (window->wl.window_fully_created) debug("Marked window as fully created in configure event\n");
+    }
+}
+
+static void
 apply_xdg_configure_changes(_GLFWwindow *window) {
     bool suspended_changed = false;
     if (window->wl.pending_state & PENDING_STATE_TOPLEVEL) {
@@ -766,6 +776,7 @@ apply_xdg_configure_changes(_GLFWwindow *window) {
             window->swaps_disallowed = false;
             wait_for_swap_to_commit(window);
             window->wl.once.surface_configured = true;
+            update_fully_created_on_configure(window);
         }
 
 #ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
@@ -1024,6 +1035,7 @@ layer_surface_handle_configure(void* data, struct zwlr_layer_surface_v1* surface
         window->swaps_disallowed = false;
         wait_for_swap_to_commit(window);
         window->wl.once.surface_configured = true;
+        update_fully_created_on_configure(window);
     }
     GLFWvidmode m = {0};
     if (window->wl.monitorsCount) _glfwPlatformGetVideoMode(window->wl.monitors[0], &m);
