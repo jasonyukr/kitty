@@ -367,7 +367,8 @@ def as_text(
     add_history: bool = False,
     add_wrap_markers: bool = False,
     alternate_screen: bool = False,
-    add_cursor: bool = False
+    add_cursor: bool = False,
+    bottom_mode: bool = False,
 ) -> str:
     lines: list[str] = []
     add_history = add_history and not (screen.is_using_alternate_linebuf() ^ alternate_screen)
@@ -394,6 +395,9 @@ def as_text(
         h: list[str] = [pht] if pht else []
         screen.as_text_for_history_buf(h.append, as_ansi, add_wrap_markers)
         if h:
+            if bottom_mode:
+                if len(h) > 4000:
+                    h = h[-4000:]
             if as_ansi:
                 h[-1] += '\x1b[m'
         ans = ''.join(chain(h, lines))
@@ -1742,9 +1746,10 @@ class Window:
         add_history: bool = False,
         add_wrap_markers: bool = False,
         alternate_screen: bool = False,
-        add_cursor: bool = False
+        add_cursor: bool = False,
+        bottom_mode: bool = False
     ) -> str:
-        return as_text(self.screen, as_ansi, add_history, add_wrap_markers, alternate_screen, add_cursor)
+        return as_text(self.screen, as_ansi, add_history, add_wrap_markers, alternate_screen, add_cursor, bottom_mode)
 
     def cmd_output(self, which: CommandOutput = CommandOutput.last_run, as_ansi: bool = False, add_wrap_markers: bool = False) -> str:
         return cmd_output(self.screen, which, as_ansi, add_wrap_markers)
