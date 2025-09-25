@@ -28,7 +28,7 @@ class GetText(RemoteCommand):
     options_spec = MATCH_WINDOW_OPTION + '''\n
 --extent
 default=screen
-choices=screen, all, selection, first_cmd_output_on_screen, last_cmd_output, last_visited_cmd_output, last_non_empty_output
+choices=screen, all, bottom, selection, first_cmd_output_on_screen, last_cmd_output, last_visited_cmd_output, last_non_empty_output
 What text to get. The default of :code:`screen` means all text currently on the screen.
 :code:`all` means all the screen+scrollback and :code:`selection` means the
 currently selected text. :code:`first_cmd_output_on_screen` means the output of the first
@@ -111,6 +111,14 @@ Get text from the window this command is run in, rather than the active window.
                 CommandOutput.last_visited,
                 as_ansi=bool(payload_get('ansi')),
                 add_wrap_markers=bool(payload_get('wrap_markers')),
+            )
+        elif payload_get('extent') == 'bottom':
+            ans = window.as_text(
+                as_ansi=bool(payload_get('ansi')),
+                add_history=payload_get('extent') == 'bottom',
+                add_cursor=bool(payload_get('cursor')),
+                add_wrap_markers=bool(payload_get('wrap_markers')),
+                bottom_mode=True,
             )
         else:
             ans = window.as_text(

@@ -1038,7 +1038,14 @@ as_text_generic(PyObject *args, void *container, get_line_func get_line, index_t
 #define APPEND_AND_DECREF(x) { if (x == NULL) { if (PyErr_Occurred()) return NULL; Py_RETURN_NONE; } PyObject* retval = PyObject_CallFunctionObjArgs(callback, x, NULL); Py_CLEAR(x); if (!retval) return NULL; Py_DECREF(retval); }
     PyObject *callback;
     int as_ansi = 0, insert_wrap_markers = 0;
-    if (!PyArg_ParseTuple(args, "O|pp", &callback, &as_ansi, &insert_wrap_markers)) return NULL;
+    unsigned int line_limit = 0;
+    index_type line_start = 0;
+    if (!PyArg_ParseTuple(args, "O|ppI", &callback, &as_ansi, &insert_wrap_markers, &line_limit)) return NULL;
+    if (line_limit > 0) {
+        if (line_limit < lines) {
+            line_start = lines - line_limit;
+        }
+    }
     PyObject *t = NULL;
     RAII_PyObject(nl, PyUnicode_FromString("\n"));
     RAII_PyObject(cr, PyUnicode_FromString("\r"));
@@ -1047,7 +1054,7 @@ as_text_generic(PyObject *args, void *container, get_line_func get_line, index_t
     ANSILineState s = {.output_buf=ansibuf};
     ansibuf->active_hyperlink_id = 0;
     bool need_newline = false;
-    for (index_type y = 0; y < lines; y++) {
+    for (index_type y = line_start; y < lines; y++) {
         Line *line = get_line(container, y);
         if (!line) { if (PyErr_Occurred()) return NULL; break; }
         if (need_newline) APPEND(nl);
