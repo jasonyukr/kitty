@@ -92,12 +92,12 @@ create_shadow_tile(_GLFWwindow *window) {
     const size_t margin = (size_t)round(decs.metrics.width * decs.for_window_state.fscale);
     if (st.data && st.for_decoration_size == margin) return margin;
     st.for_decoration_size = margin;
-    free(st.data);
     st.segments = 7;
     st.stride = st.segments * margin;
     st.corner_size = margin * (st.segments - 1) / 2;
     kernel_type* mask = create_shadow_mask(st.stride, st.stride, margin, 2 * margin + 1, (kernel_type)0.7, 32 * margin);
-    st.data = malloc(sizeof(uint32_t) * st.stride * st.stride);
+    free(st.data);
+    st.data = malloc(sizeof(st.data[0]) * st.stride * st.stride);
     if (st.data) for (size_t i = 0; i < st.stride * st.stride; i++) st.data[i] = ((uint8_t)(mask[i] * 255)) << 24;
     free(mask);
     return margin;
@@ -210,7 +210,7 @@ scale(unsigned thickness, float factor) {
 
 static void
 render_minimize(uint8_t *out, unsigned width, unsigned height) {
-    memset(out, 0, width * height);
+    memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12;
     unsigned baseline = height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.8f);
@@ -220,7 +220,7 @@ render_minimize(uint8_t *out, unsigned width, unsigned height) {
 
 static void
 render_maximize(uint8_t *out, unsigned width, unsigned height) {
-    memset(out, 0, width * height);
+    memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12, half_thickness = thickness / 2;
     unsigned baseline = height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.0f);
@@ -234,7 +234,7 @@ render_maximize(uint8_t *out, unsigned width, unsigned height) {
 
 static void
 render_restore(uint8_t *out, unsigned width, unsigned height) {
-    memset(out, 0, width * height);
+    memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12, half_thickness = thickness / 2;
     unsigned baseline = height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.0f);
@@ -277,7 +277,7 @@ render_line(uint8_t *buf, unsigned width, unsigned height, unsigned thickness, i
 
 static void
 render_close(uint8_t *out, unsigned width, unsigned height) {
-    memset(out, 0, width * height);
+    memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12;
     unsigned baseline = height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.3f);
@@ -313,10 +313,10 @@ static void
 render_button(void(*which)(uint8_t *, unsigned, unsigned), bool antialias, uint32_t *dest, uint8_t *src, unsigned height, unsigned dest_stride, unsigned src_width, unsigned dest_left, uint32_t bg, uint32_t fg) {
     if (antialias) {
         static const unsigned factor = 4;
-        uint8_t *big_src = malloc(factor * factor * height * src_width);
+        uint8_t *big_src = malloc((size_t)factor * factor * height * src_width);
         if (big_src) {
             which(big_src, src_width * factor, height * factor);
-            memset(src, 0, src_width * height);
+            memset(src, 0, (size_t)src_width * height);
             downsample(src, big_src, src_width, height, factor);
             free(big_src);
         } else which(src, src_width, height);
@@ -346,8 +346,8 @@ render_title_bar(_GLFWwindow *window, bool to_front_buffer) {
     uint8_t *output = to_front_buffer ? decs.titlebar.buffer.data.front : decs.titlebar.buffer.data.back;
 
     // render text part
-    int button_size = decs.titlebar.buffer.height;
-    int num_buttons = 1;
+    size_t button_size = decs.titlebar.buffer.height;
+    unsigned num_buttons = 1;
     if (window->wl.wm_capabilities.maximize) num_buttons++;
     if (window->wl.wm_capabilities.minimize) num_buttons++;
     if (window->wl.title && window->wl.title[0] && _glfw.callbacks.draw_text) {
@@ -570,6 +570,11 @@ window_is_csd_capable(_GLFWwindow *window) {
     return window->decorated && !decs.serverSide && window->wl.xdg.toplevel;
 }
 
+bool
+csd_should_window_be_decorated(_GLFWwindow *window) {
+    return window_is_csd_capable(window) && window->monitor == NULL && (window->wl.current.toplevel_states & TOPLEVEL_STATE_FULLSCREEN) == 0;
+}
+
 static bool
 ensure_csd_resources(_GLFWwindow *window) {
     if (!window_is_csd_capable(window)) return false;
@@ -653,18 +658,18 @@ csd_change_title(_GLFWwindow *window) {
 
 void
 csd_set_window_geometry(_GLFWwindow *window, int32_t *width, int32_t *height) {
-    bool has_csd = window_is_csd_capable(window) && decs.titlebar.surface && !(window->wl.current.toplevel_states & TOPLEVEL_STATE_FULLSCREEN);
+    const bool include_space_for_csd = csd_should_window_be_decorated(window);
     bool size_specified_by_compositor = *width > 0 && *height > 0;
     if (!size_specified_by_compositor) {
         *width = window->wl.user_requested_content_size.width;
         *height = window->wl.user_requested_content_size.height;
         if (window->wl.xdg.top_level_bounds.width > 0) *width = MIN(*width, window->wl.xdg.top_level_bounds.width);
         if (window->wl.xdg.top_level_bounds.height > 0) *height = MIN(*height, window->wl.xdg.top_level_bounds.height);
-        if (has_csd) *height += decs.metrics.visible_titlebar_height;
+        if (include_space_for_csd) *height += decs.metrics.visible_titlebar_height;
     }
     decs.geometry.x = 0; decs.geometry.y = 0;
     decs.geometry.width = *width; decs.geometry.height = *height;
-    if (has_csd) {
+    if (include_space_for_csd) {
         decs.geometry.y = -decs.metrics.visible_titlebar_height;
         *height -= decs.metrics.visible_titlebar_height;
     }

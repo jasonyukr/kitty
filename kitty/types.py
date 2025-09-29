@@ -18,6 +18,8 @@ class SingleInstanceData(TypedDict):
     cmdline_args_for_open: Sequence[str]
     cwd: str
     session_data: str
+    session_arg: str
+    session_path: str
     environ: Mapping[str, str]
     notify_on_os_window_death: str | None
 
@@ -213,7 +215,7 @@ def modmap() -> dict[str, int]:
 
 if TYPE_CHECKING:
     from typing import Literal
-    ActionGroup = Literal['cp', 'sc', 'win', 'tab', 'mouse', 'mk', 'lay', 'misc', 'debug']
+    ActionGroup = Literal['cp', 'sc', 'win', 'tab', 'mouse', 'mk', 'lay', 'misc', 'debug', 'session']
 else:
     ActionGroup = str
 
@@ -230,4 +232,5 @@ def ac(group: ActionGroup, doc: str) -> Callable[[_T], _T]:
     return w
 
 
+WindowMapper = Callable[[int], int | None]
 DecoratedFunc = TypeVar('DecoratedFunc', bound=Callable[..., Any])

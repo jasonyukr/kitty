@@ -48,6 +48,7 @@
 #define zero_at_ptr(p) memset((p), 0, sizeof((p)[0]))
 #define literal_strlen(x) (sizeof(x)-1)
 #define zero_at_ptr_count(p, count) memset((p), 0, (count) * sizeof((p)[0]))
+#define C0_EXCEPT_NL_SPACE_TAB_DEL 0x0 ... 0x8: case 0xb ... 0x1f
 #define C0_EXCEPT_NL_SPACE_TAB 0x0 ... 0x8: case 0xb ... 0x1f: case 0x7f
 void log_error(const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
 #define fatal(...) { log_error(__VA_ARGS__); exit(EXIT_FAILURE); }
@@ -112,6 +113,7 @@ typedef enum MouseShapes {
 /* end mouse shapes */
 } MouseShape;
 typedef enum { NONE, MENUBAR, WINDOW, ALL } WindowTitleIn;
+typedef enum { SCROLLBAR_NEVER, SCROLLBAR_ON_SCROLLED, SCROLLBAR_ON_HOVERED, SCROLLBAR_ON_SCROLL_AND_HOVER, SCROLLBAR_ALWAYS } ScrollbarVisibilityPolicy;
 typedef enum { TILING, SCALED, MIRRORED, CLAMPED, CENTER_CLAMPED, CENTER_SCALED } BackgroundImageLayout;
 typedef struct ImageAnchorPosition {
     float canvas_x, canvas_y, image_x, image_y;
@@ -195,6 +197,7 @@ typedef struct ImageAnchorPosition {
 typedef enum UTF8State { UTF8_ACCEPT = 0, UTF8_REJECT = 1} UTF8State;
 
 typedef struct {
+    // right = left + width, bottom = top + height
     uint32_t left, top, right, bottom;
 } Region;
 
@@ -209,20 +212,23 @@ typedef struct {
 
 typedef struct {
     PyObject_HEAD
-
-    bool bold, italic, reverse, strikethrough, dim, non_blinking;
     monotonic_t position_changed_by_client_at;
     unsigned int x, y;
-    uint8_t decoration;
+    bool non_blinking;
     CursorShape shape;
-    color_type fg, bg, decoration_fg;
+
+    struct {
+        bool bold, italic, reverse, strikethrough, dim, blink;
+        uint8_t decoration;
+        color_type fg, bg, decoration_fg;
+    } sgr;
 } Cursor;
 
 typedef struct {
-    bool is_focused, render_even_when_unfocused;
+    bool is_focused, render_even_when_unfocused, is_visible;
     CursorShape shape;
-    unsigned int x, y;
-    float opacity;
+    unsigned x, y, multicursor_count;
+    float cursor_opacity, text_blink_opacity;
 } CursorRenderInfo;
 
 typedef enum DynamicColorType {

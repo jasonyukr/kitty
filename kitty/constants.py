@@ -22,7 +22,7 @@ class Version(NamedTuple):
 
 appname: str = 'kitty'
 kitty_face = '🐱'
-version: Version = Version(0, 42, 2)
+version: Version = Version(0, 43, 0)
 str_version: str = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos: bool = 'darwin' in _plat
@@ -34,6 +34,7 @@ default_pager_for_help = ('less', '-iRXF')
 kitty_run_data: dict[str, Any] = getattr(sys, 'kitty_run_data', {})
 launched_by_launch_services = kitty_run_data.get('launched_by_launch_services', False)
 is_quick_access_terminal_app = kitty_run_data.get('is_quick_access_terminal_app', False)
+unserialize_launch_flag = 'kitty-unserialize-data='
 
 if getattr(sys, 'frozen', False):
     extensions_dir: str = kitty_run_data['extensions_dir']
@@ -202,7 +203,11 @@ def detect_if_wayland_ok() -> bool:
     wayland = glfw_path('wayland')
     if not os.path.exists(wayland):
         return False
-    return True
+    import ctypes
+    with suppress(Exception):
+        setattr(detect_if_wayland_ok, 'keep_module_loaded', ctypes.CDLL(wayland))
+        return True
+    return False
 
 
 def is_wayland(opts: Optional['Options'] = None) -> bool:

@@ -26,6 +26,7 @@ class LaunchSpec(NamedTuple):
     args: list[str]
 
 
+# Options definition {{{
 env_docs = '''\
 type=list
 Environment variables to set in the child process. Can be specified multiple
@@ -144,6 +145,19 @@ refers to the process that was originally started when the window was created.
 When opening in the same working directory as the current window causes the new
 window to connect to a remote host, you can use the :option:`--hold-after-ssh`
 flag to prevent the new window from closing when the connection is terminated.
+
+
+--add-to-session
+Add the newly created window/tab to the specified session. Use :code:`.` to add
+to the session of the :option:`source window <launch --source-window>`, if any. See :ref:`sessions`
+for what a session is and how to use one. By default, the window is added to the
+session of the :option:`source window <launch --source-window>` when :option:`launch --cwd`
+is set to use the the working directory from that window, otherwise the newly created window
+does not belong to any session. To force adding to no session, use the value :code:`!`.
+Adding a newly created window to a session is purely temporary, it does not change the actual
+session file, for that you have to resave the session. Note that using this flag in a launch
+command within a session file has no effect as the window is always added to the
+session belonging to that file.
 
 
 --env
@@ -405,6 +419,7 @@ When using :option:`--cwd`:code:`=current` or similar from a window that is runn
 the new window will run a local shell after disconnecting from the remote host, when this option
 is specified.
 """
+# }}}
 
 
 def parse_launch_args(args: Sequence[str] | None = None) -> LaunchSpec:
@@ -438,7 +453,7 @@ def layer_shell_config_from_panel_opts(panel_opts: Iterable[str]) -> LayerShellC
     return layer_shell_config(opts)
 
 
-def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, next_to: Window | None) -> Tab:
+def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, next_to: Window | None, add_to_session: str) -> Tab:
 
     def create_tab(tm: TabManager | None = None) -> Tab:
         if tm is None:
@@ -454,6 +469,7 @@ def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, n
         tab = tm.new_tab(empty_tab=True, location=opts.location)
         if opts.tab_title:
             tab.set_title(opts.tab_title)
+        tab.created_in_session_name = add_to_session
         return tab
 
     if opts.type == 'tab':
@@ -529,6 +545,9 @@ def load_watch_modules(watchers: Iterable[str]) -> Watchers | None:
         w = m.get('on_color_scheme_preference_change')
         if callable(w):
             ans.on_color_scheme_preference_change.append(w)
+        w = m.get('on_tab_bar_dirty')
+        if callable(w):
+            ans.on_tab_bar_dirty.append(w)
     return ans
 
 
@@ -607,6 +626,7 @@ def _launch(
     rc_from_window: Window | None = None,
     base_env: dict[str, str] | None = None,
     child_death_callback: Callable[[int, Exception | None], None] | None = None,
+    startup_command_via_shell_integration: Sequence[str] | str = (),
 ) -> Window | None:
     source_window = boss.active_window_for_cwd
     if opts.source_window:
@@ -765,17 +785,35 @@ def _launch(
         if child_death_callback is not None:
             child_death_callback(0, None)
     else:
+        add_to_session = opts.add_to_session or ''
+        match add_to_session:
+            case '.':
+                add_to_session = source_window.created_in_session_name if source_window else ''
+            case '!':
+                add_to_session = ''
+            case '':
+                if kw['cwd_from'] is not None and source_window:
+                    add_to_session = source_window.created_in_session_name
         kw['hold'] = opts.hold
         if force_target_tab and target_tab is not None:
             tab = target_tab
         else:
-            tab = tab_for_window(boss, opts, target_tab, next_to)
+            tab = tab_for_window(boss, opts, target_tab, next_to, add_to_session)
         watchers = load_watch_modules(opts.watcher)
         with Window.set_ignore_focus_changes_for_new_windows(opts.keep_focus):
             new_window: Window = tab.new_window(
-                env=env or None, watchers=watchers or None, is_clone_launch=is_clone_launch, next_to=next_to, **kw)
+                env=env or None, watchers=watchers or None, is_clone_launch=is_clone_launch, next_to=next_to,
+                startup_command_via_shell_integration=startup_command_via_shell_integration, **kw)
+            new_window.created_in_session_name = add_to_session
             if child_death_callback is not None:
                 boss.monitor_pid(new_window.child.pid or 0, child_death_callback)
+            if new_window.creation_spec:
+                if opts.watcher:
+                    new_window.creation_spec = new_window.creation_spec._replace(watchers=tuple(opts.watcher))
+                if opts.spacing:
+                    new_window.creation_spec = new_window.creation_spec._replace(spacing=tuple(opts.spacing))
+                if opts.color:
+                    new_window.creation_spec = new_window.creation_spec._replace(colors=tuple(opts.color))
         if spacing:
             patch_window_edges(new_window, spacing)
             tab.relayout()
@@ -791,7 +829,10 @@ def _launch(
         if opts.type == 'overlay-main':
             new_window.overlay_type = OverlayType.main
         if opts.var:
-            for key, val in parse_var(opts.var):
+            vars = tuple(parse_var(opts.var))
+            if new_window.creation_spec:
+                new_window.creation_spec = new_window.creation_spec._replace(user_vars=vars)
+            for key, val in vars:
                 new_window.set_user_var(key, val)
         return new_window
     return None
@@ -807,12 +848,15 @@ def launch(
     rc_from_window: Window | None = None,
     base_env: dict[str, str] | None = None,
     child_death_callback: Callable[[int, Exception | None], None] | None = None,
+    startup_command_via_shell_integration: Sequence[str] | str = (),
 ) -> Window | None:
     active = boss.active_window
     if opts.keep_focus and active:
         orig, active.ignore_focus_changes = active.ignore_focus_changes, True
     try:
-        return _launch(boss, opts, args, target_tab, force_target_tab, is_clone_launch, rc_from_window, base_env, child_death_callback)
+        return _launch(
+            boss, opts, args, target_tab, force_target_tab, is_clone_launch, rc_from_window, base_env,
+            child_death_callback, startup_command_via_shell_integration)
     finally:
         if opts.keep_focus and active:
             active.ignore_focus_changes = orig
@@ -969,6 +1013,42 @@ class EditCmd:
         window.write_to_child('KITTY_DATA_END\n')
 
 
+@run_once
+def excluded_env_vars() -> frozenset[str]:
+    return frozenset({
+        'HOME', 'LOGNAME', 'USER', 'PWD',
+        # some people export these. We want the shell rc files to recreate them
+        'PS0', 'PS1', 'PS2', 'PS3', 'PS4', 'RPS1', 'PROMPT_COMMAND', 'SHLVL',
+        # conda state env vars
+        'CONDA_SHLVL', 'CONDA_PREFIX', 'CONDA_PROMPT_MODIFIER', 'CONDA_EXE', 'CONDA_PYTHON_EXE', '_CE_CONDA', '_CE_M',
+        # skip SSH environment variables
+        'SSH_CLIENT', 'SSH_CONNECTION', 'SSH_ORIGINAL_COMMAND', 'SSH_TTY', 'SSH2_TTY',
+        'SSH_TUNNEL', 'SSH_USER_AUTH', 'SSH_AUTH_SOCK',
+        # Dont clone KITTY_WINDOW_ID
+        'KITTY_WINDOW_ID',
+        # Bash variables from "bind -x" and "complete -C" (needed not to confuse bash-preexec)
+        'READLINE_ARGUMENT', 'READLINE_LINE', 'READLINE_MARK', 'READLINE_POINT',
+        'COMP_LINE', 'COMP_POINT', 'COMP_TYPE',
+        # GPG gpg-agent
+        'GPG_TTY',
+        # Session variables of XDG
+        'XDG_SESSION_CLASS', 'XDG_SESSION_ID', 'XDG_SESSION_TYPE',
+        # Session variables of GNU Screen
+        'STY', 'WINDOW',
+        # Session variables of interactive shell plugins
+        'ATUIN_SESSION', 'ATUIN_HISTORY_ID',
+        'BLE_SESSION_ID', '_ble_util_fdlist_cloexec', '_ble_util_fdvars_export',
+        '_GITSTATUS_CLIENT_PID', '_GITSTATUS_REQ_FD', '_GITSTATUS_RESP_FD', 'GITSTATUS_DAEMON_PID',
+        'MCFLY_SESSION_ID',
+        'STARSHIP_SESSION_KEY',
+    })
+
+
+def is_excluded_env_var(x: str) -> bool:
+    # conda state env vars for multi-level virtual environments CONDA_PREFIX_*
+    return x in excluded_env_vars() or x.startswith('CONDA_PREFIX_')
+
+
 class CloneCmd:
 
     def __init__(self, msg: str) -> None:
@@ -999,36 +1079,7 @@ class CloneCmd:
                     env = parse_bash_env(v, self.bash_version)
                 else:
                     env = parse_null_env(v)
-                self.env = {k: v for k, v in env.items() if k not in {
-                    'HOME', 'LOGNAME', 'USER', 'PWD',
-                    # some people export these. We want the shell rc files to recreate them
-                    'PS0', 'PS1', 'PS2', 'PS3', 'PS4', 'RPS1', 'PROMPT_COMMAND', 'SHLVL',
-                    # conda state env vars
-                    'CONDA_SHLVL', 'CONDA_PREFIX', 'CONDA_PROMPT_MODIFIER', 'CONDA_EXE', 'CONDA_PYTHON_EXE', '_CE_CONDA', '_CE_M',
-                    # skip SSH environment variables
-                    'SSH_CLIENT', 'SSH_CONNECTION', 'SSH_ORIGINAL_COMMAND', 'SSH_TTY', 'SSH2_TTY',
-                    'SSH_TUNNEL', 'SSH_USER_AUTH', 'SSH_AUTH_SOCK',
-                    # Dont clone KITTY_WINDOW_ID
-                    'KITTY_WINDOW_ID',
-                    # Bash variables from "bind -x" and "complete -C" (needed not to confuse bash-preexec)
-                    'READLINE_ARGUMENT', 'READLINE_LINE', 'READLINE_MARK', 'READLINE_POINT',
-                    'COMP_LINE', 'COMP_POINT', 'COMP_TYPE',
-                    # GPG gpg-agent
-                    'GPG_TTY',
-                    # Session variables of XDG
-                    'XDG_SESSION_CLASS', 'XDG_SESSION_ID', 'XDG_SESSION_TYPE',
-                    # Session variables of GNU Screen
-                    'STY', 'WINDOW',
-                    # Session variables of interactive shell plugins
-                    'ATUIN_SESSION', 'ATUIN_HISTORY_ID',
-                    'BLE_SESSION_ID', '_ble_util_fdlist_cloexec', '_ble_util_fdvars_export',
-                    '_GITSTATUS_CLIENT_PID', '_GITSTATUS_REQ_FD', '_GITSTATUS_RESP_FD', 'GITSTATUS_DAEMON_PID',
-                    'MCFLY_SESSION_ID',
-                    'STARSHIP_SESSION_KEY',
-                } and not k.startswith((
-                    # conda state env vars for multi-level virtual environments
-                    'CONDA_PREFIX_',
-                ))}
+                self.env = {k: v for k, v in env.items() if not is_excluded_env_var(k)}
             elif k == 'cwd':
                 self.cwd = v
             elif k == 'history':

@@ -26,7 +26,7 @@ from weakref import WeakValueDictionary
 
 from .child import cached_process_data, default_env, set_default_env
 from .cli import create_opts, green, parse_args
-from .cli_stub import CLIOptions
+from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .clipboard import (
     Clipboard,
     ClipboardType,
@@ -122,7 +122,16 @@ from .notifications import NotificationManager
 from .options.types import Options, nullable_colors
 from .options.utils import MINIMUM_FONT_SIZE, KeyboardMode, KeyDefinition
 from .os_window_size import initial_window_size_func
-from .session import Session, create_sessions, get_os_window_sizing_data
+from .session import (
+    Session,
+    close_session_with_confirm,
+    create_sessions,
+    default_save_as_session_opts,
+    get_os_window_sizing_data,
+    goto_session,
+    most_recent_session,
+    save_as_session,
+)
 from .shaders import load_shader_programs
 from .simple_cli_definitions import grab_keyboard_docs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
@@ -144,7 +153,7 @@ from .utils import (
     parse_uri_list,
     platform_window_id,
     safe_print,
-    sanitize_url_for_dispay_to_user,
+    sanitize_url_for_display_to_user,
     shlex_split,
     startup_notification_handler,
     timed_debug_print,
@@ -282,7 +291,7 @@ class DumpCommands:  # {{{
                 if isinstance(x, dict):
                     return json.dumps(x)
                 return x
-            safe_print(what, *map(fmt, a))
+            safe_print(what, *map(fmt, a), flush=True)
 # }}}
 
 
@@ -447,7 +456,7 @@ class Boss:
             size_data = get_os_window_sizing_data(opts_for_size or get_options(), startup_session)
             wclass = wclass or getattr(startup_session, 'os_window_class', None) or self.args.cls or appname
             wname = wname or getattr(startup_session, 'os_window_name', None) or self.args.name or wclass
-            wtitle = override_title or self.args.title
+            wtitle = override_title or getattr(startup_session, 'os_window_title', None) or self.args.title
             window_state = window_state or getattr(startup_session, 'os_window_state', None)
             wstate = parse_os_window_state(window_state) if window_state is not None else None
             with startup_notification_handler(do_notify=startup_id is not None, startup_id=startup_id) as pre_show_callback:
@@ -501,6 +510,15 @@ class Boss:
                         'background_opacity': bo,
                     }
 
+    def serialize_state_as_session(self, session_path: str = '', ser_opts: SaveAsSessionOptions | None = None) -> Iterator[str]:
+        if ser_opts is None:
+            ser_opts = default_save_as_session_opts()
+        matched_windows = frozenset(self.match_windows(ser_opts.match)) if ser_opts.match else None
+        s = {current_focused_os_window_id(): 2, last_focused_os_window_id(): 1}
+        for i, os_window_id in enumerate(sorted(self.os_window_map, key=lambda wid: s.get(wid, 0))):
+            tm = self.os_window_map[os_window_id]
+            yield from tm.serialize_state_as_session(session_path, matched_windows, is_first=i==0, ser_opts=ser_opts)
+
     @property
     def all_tab_managers(self) -> Iterator[TabManager]:
         yield from self.os_window_map.values()
@@ -515,9 +533,10 @@ class Boss:
         for tab in self.all_tabs:
             yield from tab
 
-    def match_windows(self, match: str, self_window: Optional['Window'] = None) -> Iterator[Window]:
+    def match_windows(self, match: str, self_window: Optional['Window'] = None, all_windows: Iterable[Window] | None = None) -> Iterator[Window]:
+        all_windows = self.all_windows if all_windows is None else all_windows
         if match == 'all':
-            yield from self.all_windows
+            yield from all_windows
             return
         from .search_query_parser import search
         tab = self.active_tab
@@ -525,7 +544,10 @@ class Boss:
             tm = self.os_window_map.get(last_focused_os_window_id())
             if tm is not None:
                 tab = tm.active_tab
-        window_id_limit = max(self.window_id_map, default=-1) + 1
+        wids = {w.id for w in all_windows}
+        window_id_limit = max(wids, default=-1) + 1
+        active_session = self.active_session
+        prev_active_session = most_recent_session()
 
         def get_matches(location: str, query: str, candidates: set[int]) -> set[int]:
             if location == 'id' and query.startswith('-'):
@@ -535,31 +557,27 @@ class Boss:
                     return set()
                 if q < 0:
                     query = str(window_id_limit + q)
-            return {wid for wid in candidates if self.window_id_map[wid].matches_query(location, query, tab, self_window)}
+            return {wid for wid in candidates if self.window_id_map[wid].matches_query(location, query, tab, self_window, active_session, prev_active_session)}
 
         for wid in search(match, (
-            'id', 'title', 'pid', 'cwd', 'cmdline', 'num', 'env', 'var', 'recent', 'state', 'neighbor',
-        ), set(self.window_id_map), get_matches):
+            'id', 'title', 'pid', 'cwd', 'cmdline', 'num', 'env', 'var', 'recent', 'state', 'neighbor', 'session',
+        ), wids, get_matches):
             yield self.window_id_map[wid]
 
-    def tab_for_window(self, window: Window) -> Tab | None:
-        for tab in self.all_tabs:
-            for w in tab:
-                if w.id == window.id:
-                    return tab
-        return None
-
-    def match_tabs(self, match: str) -> Iterator[Tab]:
+    def match_tabs(self, match: str, all_tabs: Iterable[Tab] | None = None) -> Iterator[Tab]:
+        all_tabs = self.all_tabs if all_tabs is None else all_tabs
         if match == 'all':
-            yield from self.all_tabs
+            yield from all_tabs
             return
         from .search_query_parser import search
         tm = self.active_tab_manager
         if current_focused_os_window_id() <= 0:
             tm = self.os_window_map.get(last_focused_os_window_id()) or tm
-        tim = {t.id: t for t in self.all_tabs}
+        tim = {t.id: t for t in all_tabs}
         tab_id_limit = max(tim, default=-1) + 1
         window_id_limit = max(self.window_id_map, default=-1) + 1
+        active_session = self.active_session
+        prev_active_session = most_recent_session()
 
         def get_matches(location: str, query: str, candidates: set[int]) -> set[int]:
             if location in ('id', 'window_id') and query.startswith('-'):
@@ -570,20 +588,35 @@ class Boss:
                 if q < 0:
                     limit = tab_id_limit if location == 'id' else window_id_limit
                     query = str(limit + q)
-            return {wid for wid in candidates if tim[wid].matches_query(location, query, tm)}
+            return {wid for wid in candidates if tim[wid].matches_query(location, query, tm, active_session, prev_active_session)}
 
         found = False
         for tid in search(match, (
-                'id', 'index', 'title', 'window_id', 'window_title', 'pid', 'cwd', 'env', 'var', 'cmdline', 'recent', 'state'
+            'id', 'index', 'title', 'window_id', 'window_title', 'pid', 'cwd', 'env', 'var',
+            'cmdline', 'recent', 'state', 'session',
         ), set(tim), get_matches):
             found = True
             yield tim[tid]
 
         if not found:
-            tabs = {self.tab_for_window(w) for w in self.match_windows(match)}
+            tabs = {w.tabref() for w in self.match_windows(match)}
             for q in tabs:
                 if q:
                     yield q
+
+    def focus_os_window(self, os_window_id: int, if_needed_only: bool = True) -> bool:
+        if if_needed_only and current_focused_os_window_id() == os_window_id:
+            return False
+
+        def doit(token: str = '') -> None:
+            focus_os_window(os_window_id, True, token)
+
+        if is_wayland():
+            if not run_with_activation_token(doit):
+                doit()
+        else:
+            doit()
+        return True
 
     def set_active_window(
         self, window: Window, switch_os_window_if_needed: bool = False, for_keep_focus: bool = False, activation_token: str = ''
@@ -595,8 +628,14 @@ class Boss:
                         if tab is not self.active_tab:
                             tm.set_active_tab(tab, for_keep_focus=window.tabref() if for_keep_focus else None)
                         tab.set_active_window(w, for_keep_focus=window if for_keep_focus else None)
-                        if activation_token or (switch_os_window_if_needed and current_focused_os_window_id() != os_window_id):
-                            focus_os_window(os_window_id, True, activation_token)
+                        if switch_os_window_if_needed and current_focused_os_window_id() != os_window_id:
+                            if activation_token or not is_wayland():
+                                focus_os_window(os_window_id, True, activation_token)
+                            else:
+                                def doit(token: str = '') -> None:
+                                    focus_os_window(os_window_id, True, token)
+                                if not run_with_activation_token(doit):
+                                    doit()
                         return os_window_id
         return None
 
@@ -606,7 +645,14 @@ class Boss:
         else:
             sw = self.args_to_special_window(args, cwd_from) if args else None
         startup_session = next(create_sessions(get_options(), special_window=sw, cwd_from=cwd_from))
-        return self.add_os_window(startup_session)
+        startup_session.session_name = ''
+        ans = self.add_os_window(startup_session)
+        if cwd_from is not None and (sow := cwd_from.window) and (tm := self.os_window_map.get(ans)) and sow.created_in_session_name:
+            for tab in tm:
+                tab.created_in_session_name = sow.created_in_session_name
+                for w in tab:
+                    w.created_in_session_name = sow.created_in_session_name
+        return ans
 
     @ac('win', 'New OS Window')
     def new_os_window(self, *args: str) -> None:
@@ -619,7 +665,10 @@ class Boss:
             return t.active_window_for_cwd
         return None
 
-    @ac('win', 'New OS Window with the same working directory as the currently active window')
+    @ac('win', '''
+        New OS Window with the same working directory as the currently active window.
+        The new OS Window is added to the currently active :ref:`session <sessions>`, if any.
+    ''')
     def new_os_window_with_cwd(self, *args: str) -> None:
         w = self.window_for_dispatch or self.active_window_for_cwd
         self._new_os_window(args, CwdRequest(w))
@@ -871,7 +920,7 @@ class Boss:
                     args.session = 'none'
                 else:
                     from .session import PreReadSession
-                    args.session = PreReadSession(data['session_data'], data['environ'])
+                    args.session = PreReadSession(data['session_data'], data['environ'], data['session_arg'], data['session_path'])
             else:
                 args.session = ''
             if not os.path.isabs(args.directory):
@@ -908,7 +957,7 @@ class Boss:
 
     def quick_access_terminal_invoked(self) -> None:
         for os_window_id in self.os_window_map:
-            toggle_os_window_visibility(os_window_id)
+            toggle_os_window_visibility(os_window_id, move_to_active_screen=True)
 
     def handle_remote_cmd(self, cmd: memoryview, window: Window | None = None) -> None:
         response = self._handle_remote_command(cmd, window)
@@ -916,7 +965,7 @@ class Boss:
             window.send_cmd_response(response)
 
     def mark_os_window_for_close(self, os_window_id: int, request_type: int = IMPERATIVE_CLOSE_REQUESTED) -> None:
-        if self.current_visual_select is not None and self.current_visual_select.os_window_id == os_window_id and request_type == IMPERATIVE_CLOSE_REQUESTED:
+        if self.current_visual_select is not None and self.current_visual_select.os_window_id == os_window_id:
             self.cancel_current_visual_select()
         mark_os_window_for_close(os_window_id, request_type)
 
@@ -995,7 +1044,7 @@ class Boss:
     def close_window(self) -> None:
         self.mark_window_for_close(self.window_for_dispatch)
 
-    def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None) -> tuple[str, int]:
+    def close_windows_with_confirmation_msg(self, windows: Iterable[Window], active_window: Window | None = None) -> tuple[str, int]:
         num_running_programs = 0
         num_background_programs = 0
         count_background = get_options().confirm_os_window_close[1]
@@ -1176,6 +1225,29 @@ class Boss:
             'ask', cmd, window=window, custom_callback=callback_, default_data={'response': ''}, action_on_removal=on_popup_overlay_removal
         )
 
+    def get_save_filepath(
+        self, msg: str,  # can contain newlines and ANSI formatting
+        callback: Callable[..., None],  # called with the answer or empty string when aborted
+        window: Window | None = None,  # the window associated with the confirmation
+        prompt: str = '> ',
+        initial_value: str = ''
+    ) -> None:
+        result: str = ''
+
+        def callback_(res: dict[str, Any], x: int, boss: Boss) -> None:
+            nonlocal result
+            result = res.get('response') or ''
+
+        def on_popup_overlay_removal(wid: int, boss: Boss) -> None:
+            callback(result)
+
+        cmd = ['--type', 'file', '--message', msg, '--prompt', prompt]
+        if initial_value:
+            cmd.append('--default=' + initial_value)
+        self.run_kitten_with_metadata(
+            'ask', cmd, window=window, custom_callback=callback_, default_data={'response': ''}, action_on_removal=on_popup_overlay_removal
+        )
+
     def confirm_tab_close(self, tab: Tab) -> None:
         msg, num_active_windows = self.close_windows_with_confirmation_msg(tab, tab.active_window)
         x = get_options().confirm_os_window_close[0]
@@ -1213,6 +1285,12 @@ class Boss:
         if self.current_visual_select is not None and self.current_visual_select.tab_id == tab.id:
             self.cancel_current_visual_select()
         for window in tab:
+            self.mark_window_for_close(window)
+
+    def close_windows_no_confirm(self, windows: Sequence[Window]) -> None:
+        if self.current_visual_select is not None:
+            self.cancel_current_visual_select()
+        for window in windows:
             self.mark_window_for_close(window)
 
     @ac('win', 'Toggle the fullscreen status of the active OS Window')
@@ -1306,6 +1384,8 @@ class Boss:
             map f1 clear_terminal to_cursor active
             # Same as above except cleared lines are moved into scrollback
             map f1 clear_terminal to_cursor_scroll active
+            # Erase the last command and its output (needs shell integration to work)
+            map f1 clear_terminal last_command active
         ''')
     def clear_terminal(self, action: str, only_active: bool) -> None:
         if only_active:
@@ -1333,6 +1413,9 @@ class Boss:
         elif action == 'to_cursor_scroll':
             for w in windows:
                 w.scroll_prompt_to_top(clear_scrollback=False)
+        elif action == 'last_command':
+            for w in windows:
+                w.screen.erase_last_command()
         else:
             self.show_error(_('Unknown clear type'), _('The clear type: {} is unknown').format(action))
 
@@ -1472,6 +1555,22 @@ class Boss:
         t = self.active_tab
         return None if t is None else t.active_window
 
+    @property
+    def active_session(self) -> str:
+        if t := self.active_tab:
+            if w := t.active_window:
+                return w.created_in_session_name or t.created_in_session_name
+            return t.created_in_session_name
+        return ''
+
+    @property
+    def all_loaded_session_names(self) -> Iterator[str]:
+        seen = set()
+        for w in self.all_windows:
+            if w.created_in_session_name and w.created_in_session_name not in seen:
+                seen.add(w.created_in_session_name)
+                yield w.created_in_session_name
+
     def refresh_active_tab_bar(self) -> bool:
         tm = self.active_tab_manager
         if tm:
@@ -1499,6 +1598,7 @@ class Boss:
         if self.current_visual_select:
             self.current_visual_select.cancel()
             self.current_visual_select = None
+            self.mappings.pop_keyboard_mode_if_is('__visual_select__')
 
     def visual_window_select_action(
         self, tab: Tab,
@@ -1517,7 +1617,7 @@ class Boss:
                 initial_tab_id = tm.active_tab.id
             tm.set_active_tab(tab)
         if initial_os_window_id != tab.os_window_id:
-            focus_os_window(tab.os_window_id, True)
+            self.focus_os_window(tab.os_window_id, False)
         self.current_visual_select = VisualSelect(tab.id, tab.os_window_id, initial_tab_id, initial_os_window_id, choose_msg, callback, reactivate_prev_tab)
         if tab.current_layout.only_active_window_visible:
             self.select_window_in_tab_using_overlay(tab, choose_msg, only_window_ids)
@@ -1546,8 +1646,13 @@ class Boss:
             self.mouse_handler = self.visual_window_select_mouse_handler
         else:
             self.visual_window_select_action_trigger(self.current_visual_select.window_ids[0] if self.current_visual_select.window_ids else 0)
-            if get_options().enable_audio_bell:
-                ring_bell(tab.os_window_id)
+            self.ring_bell_if_allowed(tab.os_window_id)
+
+    def ring_bell_if_allowed(self, os_window_id: int = 0) -> bool:
+        if get_options().enable_audio_bell:
+            ring_bell(os_window_id or getattr(self.active_tab_manager, 'os_window_id', 0))
+            return True
+        return False
 
     def visual_window_select_action_trigger(self, window_id: int = 0) -> None:
         if self.current_visual_select:
@@ -1590,8 +1695,7 @@ class Boss:
                 selectable_windows.append((w.id, w.title))
         if len(selectable_windows) < 2:
             self.visual_window_select_action_trigger(selectable_windows[0][0] if selectable_windows else 0)
-            if get_options().enable_audio_bell:
-                ring_bell(tab.os_window_id)
+            self.ring_bell_if_allowed(tab.os_window_id)
             return None
         cvs = self.current_visual_select
 
@@ -1795,11 +1899,11 @@ class Boss:
             return
         if num == 0:
             os_window_id = current_focused_os_window_id() or last_focused_os_window_id()
-            focus_os_window(os_window_id, True)
+            self.focus_os_window(os_window_id)
         elif num > 0:
             ids = tuple(self.os_window_map.keys())
             os_window_id = ids[min(num, len(ids)) - 1]
-            focus_os_window(os_window_id, True)
+            self.focus_os_window(os_window_id)
         elif num < 0:
             fc_map = os_window_focus_counters()
             s = sorted(fc_map.keys(), key=fc_map.__getitem__)
@@ -1809,7 +1913,7 @@ class Boss:
                 os_window_id = s[num-1]
             except IndexError:
                 os_window_id = s[0]
-            focus_os_window(os_window_id, True)
+            self.focus_os_window(os_window_id)
 
     @ac('win', 'Close the currently active OS Window')
     def close_os_window(self) -> None:
@@ -1822,6 +1926,8 @@ class Boss:
         if tm is None:
             self.mark_os_window_for_close(os_window_id)
             return
+        if self.current_visual_select is not None and self.current_visual_select.os_window_id == os_window_id:
+            self.cancel_current_visual_select()
         active_window = tm.active_window
         windows = []
         for tab in tm:
@@ -1888,7 +1994,7 @@ class Boss:
                 if tab is not None:
                     ctm = tab.tab_manager_ref()
                     if ctm is not None and tab in ctm and w in tab:
-                        focus_os_window(ctm.os_window_id)
+                        self.focus_os_window(ctm.os_window_id)
                         ctm.set_active_tab(tab)
                         tab.set_active_window(w)
                         return
@@ -1950,8 +2056,20 @@ class Boss:
     @ac('misc', 'Edit the kitty.conf config file in your favorite text editor')
     def edit_config_file(self, *a: Any) -> None:
         confpath = prepare_config_file_for_editing()
-        cmd = [kitty_exe(), '+edit'] + get_editor(get_options()) + [confpath]
-        self.new_os_window(*cmd)
+        self.edit_file(confpath)
+
+    def edit_file(self, path: str) -> None:
+        editor_cmd = get_editor(get_options())
+        exe = editor_cmd[0]
+        if not os.path.isabs(exe):
+            exe = which(exe) or ''
+            if not exe or not os.access(exe, os.X_OK):
+                self.show_error(_('Cannot find editor'), _(
+                    'Could not edit the file {0} because the editor {1} was not found.').format(editor_cmd[0]))
+                return
+            editor_cmd[0] = exe
+        path = os.path.abspath(os.path.expanduser(path))
+        self.new_os_window(*editor_cmd, path)
 
     def run_kitten_with_metadata(
         self,
@@ -2622,7 +2740,10 @@ class Boss:
     def new_tab(self, *args: str) -> None:
         self._create_tab(list(args))
 
-    @ac('tab', 'Create a new tab with working directory for the window in it set to the same as the active window')
+    @ac('tab', '''
+        Create a new tab with working directory for the window in it set to the same as the active window.
+        The tab is added to the currently active :ref:`session <sessions>`, if any.
+    ''')
     def new_tab_with_cwd(self, *args: str) -> None:
         self._create_tab(list(args), cwd_from=CwdRequest(self.window_for_dispatch or self.active_window_for_cwd))
 
@@ -2651,17 +2772,22 @@ class Boss:
             args = args[1:]
             allow_remote_control = True
         if args:
-            return tab.new_special_window(
+            w = tab.new_special_window(
                 self.args_to_special_window(args, cwd_from=cwd_from),
                 location=location, allow_remote_control=allow_remote_control)
         else:
-            return tab.new_window(cwd_from=cwd_from, location=location, allow_remote_control=allow_remote_control)
+            w = tab.new_window(cwd_from=cwd_from, location=location, allow_remote_control=allow_remote_control)
+        if cwd_from is not None and (sw := cwd_from.window):
+            w.created_in_session_name = sw.created_in_session_name
+        return w
 
     @ac('win', 'Create a new window')
     def new_window(self, *args: str) -> None:
         self._new_window(list(args))
 
-    @ac('win', 'Create a new window with working directory same as that of the active window')
+    @ac('win', '''
+        Create a new window with working directory same as that of the active window.
+        The new window will belong to the active :ref:`session <sessions>` if any.''')
     def new_window_with_cwd(self, *args: str) -> None:
         w = self.window_for_dispatch or self.active_window_for_cwd
         if w is None:
@@ -2890,7 +3016,7 @@ class Boss:
         window = window or self.active_window
         if not window:
             return
-        src_tab = self.tab_for_window(window)
+        src_tab = window.tabref()
         if src_tab is None:
             return
         with self.suppress_focus_change_events():
@@ -2971,6 +3097,29 @@ class Boss:
             ), input_data='\r\n'.join(lines).encode('utf-8'), custom_callback=done, action_on_removal=done2
         )
         return q if isinstance(q, Window) else None
+
+    @ac('session', 'Switch to the specified session, creating it if not already present. See :ref:`goto_session`.')
+    def goto_session(self, *cmdline: str) -> None:
+        goto_session(self, cmdline)
+
+    @ac('session', 'Save the current kitty state as a session file. See :ref:`save_as_session`.')
+    def save_as_session(self, *cmdline: str) -> None:
+        save_as_session(self, cmdline)
+
+    @ac('session', '''
+        Close a session, that is, close all windows that belong to the session.
+        Examples::
+            # Ask for the session to close
+            map f1 close_session
+            # Close the currently active session
+            map f1 close_session .
+            # Close session by name
+            map f1 close_session "my session"
+            # Close session by path to session file
+            map f1 close_session "/path/to/session/file.kitty-session"
+    ''')
+    def close_session(self, *cmdline: str) -> None:
+        close_session_with_confirm(self, cmdline)
 
     @ac('tab', 'Interactively select a tab to switch to')
     def select_tab(self) -> None:
@@ -3155,8 +3304,8 @@ class Boss:
         pass
     mouse_discard_event = discard_event
 
-    def sanitize_url_for_dispay_to_user(self, url: str) -> str:
-        return sanitize_url_for_dispay_to_user(url)
+    def sanitize_url_for_display_to_user(self, url: str) -> str:
+        return sanitize_url_for_display_to_user(url)
 
     def on_system_color_scheme_change(self, appearance: ColorSchemes, is_initial_value: bool) -> None:
         theme_colors.on_system_color_scheme_change(appearance, is_initial_value)

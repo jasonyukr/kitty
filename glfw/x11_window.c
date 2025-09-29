@@ -41,6 +41,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <errno.h>
+#include <assert.h>
 
 // Action for EWMH client messages
 #define _NET_WM_STATE_REMOVE        0
@@ -2060,7 +2061,7 @@ int _glfwPlatformCreateWindow(_GLFWwindow* window, const _GLFWwndconfig* wndconf
 
     if (window->monitor)
     {
-        _glfwPlatformShowWindow(window);
+        _glfwPlatformShowWindow(window, false);
         updateWindowMode(window);
         acquireMonitor(window);
     }
@@ -2457,7 +2458,7 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow* window)
     XFlush(_glfw.x11.display);
 }
 
-void _glfwPlatformShowWindow(_GLFWwindow* window)
+void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen UNUSED)
 {
     if (_glfwPlatformWindowVisible(window))
         return;
@@ -3408,6 +3409,8 @@ GLFWAPI Display* glfwGetX11Display(void)
 GLFWAPI unsigned long glfwGetX11Window(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
     _GLFW_REQUIRE_INIT_OR_RETURN(None);
     return window->x11.handle;
 }

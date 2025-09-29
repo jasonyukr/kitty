@@ -218,6 +218,10 @@ func NoFocusTracking(self *Loop) {
 	self.terminal_options.focus_tracking = false
 }
 
+func (self *Loop) RequestCurrentColorScheme() {
+	self.QueueWriteString("\x1b[?996n")
+}
+
 func (self *Loop) ColorSchemeChangeNotifications() *Loop {
 	self.terminal_options.color_scheme_change_notification = true
 	return self
@@ -327,6 +331,7 @@ func (self *Loop) Run() (err error) {
 				os.Stderr.WriteString("\x1b]\x1b\\\x1bc\x1b[H\x1b[2J") // reset terminal
 			}
 			os.Stderr.WriteString(text)
+			os.Stderr.WriteString("\n")
 			if is_terminal {
 				if term, err := tty.OpenControllingTerm(tty.SetRaw); err == nil {
 					defer term.RestoreAndClose()

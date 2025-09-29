@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/kovidgoyal/kitty/tools/icons"
 	"github.com/kovidgoyal/kitty/tools/tui"
@@ -26,6 +25,7 @@ func (h *Handler) draw_results_title() {
 	if strings.HasPrefix(text, home) {
 		text = "~" + text[len(home):]
 	}
+	text = sanitize(text)
 	available_width := h.screen_size.width - 9
 	if available_width < 2 {
 		return
@@ -82,21 +82,24 @@ func (h *Handler) render_match_with_positions(text string, add_ellipsis bool, po
 		}
 		h.lp.QueueWriteString(text)
 	}
-	at := 0
-	limit := len(text)
-	for _, p := range positions {
-		if p > limit || at > limit {
-			break
+	if len(positions) == 0 {
+		write_chunk(text, false)
+	} else {
+		at := 0
+		runes := []rune(text)
+		limit := len(runes)
+		for _, p := range positions {
+			if p >= limit || at >= limit || p <= at {
+				break
+			}
+			before := runes[at:p]
+			write_chunk(string(before), false)
+			write_chunk(string(runes[p]), true)
+			at = p + 1
 		}
-		write_chunk(text[at:p], false)
-		at = p
-		if r, sz := utf8.DecodeRuneInString(text[p:]); r != utf8.RuneError {
-			write_chunk(string(r), true)
-			at += sz
+		if at < len(runes) {
+			write_chunk(string(runes[at:]), false)
 		}
-	}
-	if at < len(text) {
-		write_chunk(text[at:], false)
 	}
 	if add_ellipsis {
 		write_chunk("…", false)
@@ -137,7 +140,7 @@ func (h *Handler) draw_column_of_matches(matches ResultsType, current_idx int, x
 		} else {
 			icon = icon_for(filepath.Join(root_dir, m.text), m.ftype)
 		}
-		text := m.text
+		text := sanitize(m.text)
 		add_ellipsis := false
 		width := wcswidth.Stringwidth(text)
 		if width > available_width-3 {
@@ -208,8 +211,22 @@ func (h *Handler) draw_column_of_matches(matches ResultsType, current_idx int, x
 	}
 }
 
-func (h *Handler) draw_list_of_results(matches *SortedResults, y, height int) (num_cols, num_shown int) {
+func (h *Handler) draw_list_of_results(matches *SortedResults, y, height int) (num_cols, num_shown, preview_width int) {
+	const BASE_COL_WIDTH = 40
 	available_width := h.screen_size.width - 2
+	show_preview := h.state.ShowPreview()
+	if show_preview && available_width < BASE_COL_WIDTH+30 {
+		show_preview = false
+	}
+	if show_preview {
+		switch {
+		case available_width < BASE_COL_WIDTH*2:
+			preview_width = max(30, available_width/2)
+		default:
+			preview_width = BASE_COL_WIDTH
+		}
+		available_width -= preview_width
+	}
 	col_width := available_width
 	num_cols = 1
 	calc_num_cols := func(num_matches int) int {
@@ -217,7 +234,7 @@ func (h *Handler) draw_list_of_results(matches *SortedResults, y, height int) (n
 			return 0
 		}
 		if num_matches > height {
-			col_width = 40
+			col_width = BASE_COL_WIDTH
 			num_cols = available_width / col_width
 			for num_cols > 0 && height*(num_cols-1) >= num_matches {
 				num_cols--
@@ -239,7 +256,7 @@ func (h *Handler) draw_list_of_results(matches *SortedResults, y, height int) (n
 		num_shown += len(col)
 		x += col_width
 	}
-	return len(columns), num_shown
+	return len(columns), num_shown, preview_width
 }
 
 func (h *Handler) draw_num_of_matches(num_shown, y int, in_progress bool) {
@@ -274,6 +291,23 @@ func (h *Handler) draw_num_of_matches(num_shown, y int, in_progress bool) {
 	}
 }
 
+func (h *Handler) draw_preview(y int) {
+	x := h.screen_size.width - h.state.last_render.preview_width
+	height := h.state.last_render.num_of_slots
+	buf := strings.Builder{}
+	buf.Grow(16 * height)
+	buf.WriteString(fmt.Sprintf(loop.MoveCursorToTemplate, y-1, x))
+	buf.WriteString("┬")
+	for i := range height {
+		buf.WriteString(fmt.Sprintf(loop.MoveCursorToTemplate, y+i, x))
+		buf.WriteString("│")
+	}
+	buf.WriteString(fmt.Sprintf(loop.MoveCursorToTemplate, y+height, x))
+	buf.WriteString("┴")
+	h.lp.QueueWriteString(buf.String())
+	h.draw_preview_content(x+1, y, h.state.last_render.preview_width-1, h.state.last_render.num_of_slots)
+}
+
 func (h *Handler) draw_results(y, bottom_margin int, matches *SortedResults, in_progress bool) (height int) {
 	height = h.screen_size.height - y - bottom_margin
 	h.lp.MoveCursorTo(1, 1+y)
@@ -286,15 +320,19 @@ func (h *Handler) draw_results(y, bottom_margin int, matches *SortedResults, in_
 	num_cols := 0
 	num := matches.Len()
 	num_shown := 0
+	h.state.last_render.preview_width = 0
 	switch num {
 	case 0:
 		h.draw_no_matches_message(in_progress)
 	default:
-		num_cols, num_shown = h.draw_list_of_results(matches, y, h.state.last_render.num_of_slots)
+		num_cols, num_shown, h.state.last_render.preview_width = h.draw_list_of_results(matches, y, h.state.last_render.num_of_slots)
 	}
 	h.state.last_render.num_matches = num
 	h.state.last_render.num_shown = num_shown
 	h.draw_num_of_matches(h.state.last_render.num_of_slots*num_cols, y+height-2, in_progress)
+	if h.state.last_render.preview_width > 0 {
+		h.draw_preview(y)
+	}
 	return
 }
 

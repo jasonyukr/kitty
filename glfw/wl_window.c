@@ -40,6 +40,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <assert.h>
 
 #define debug debug_rendering
 
@@ -424,7 +425,7 @@ apply_scale_changes(_GLFWwindow *window, bool resize_framebuffer, bool update_cs
     double scale = _glfwWaylandWindowScale(window);
     if (resize_framebuffer) resizeFramebuffer(window);
     _glfwInputWindowContentScale(window, (float)scale, (float)scale);
-    if (update_csd) csd_set_visible(window, true);  // resize the csd iff the window currently has CSD
+    if (update_csd) csd_set_visible(window, csd_should_window_be_decorated(window));  // resize the csd iff the window currently has CSD
     int buffer_scale = window->wl.fractional_scale ? 1 : (int)scale;
     wl_surface_set_buffer_scale(window->wl.surface, buffer_scale);
 }
@@ -571,18 +572,27 @@ static const struct wp_fractional_scale_v1_listener fractional_scale_listener = 
     .preferred_scale = &fractional_scale_preferred_scale,
 };
 
-static bool createSurface(_GLFWwindow* window,
-                              const _GLFWwndconfig* wndconfig)
-{
+static void
+ensure_color_manager_ready(void) {
+    if (_glfw.wl.wp_color_manager_v1 && !_glfw.wl.color_manager.image_description_done) {
+        while (!_glfw.wl.color_manager.image_description_done) wl_display_roundtrip(_glfw.wl.display);
+    }
+}
+
+static bool
+create_surface(_GLFWwindow* window, const _GLFWwndconfig* wndconfig) {
     window->wl.surface = wl_compositor_create_surface(_glfw.wl.compositor);
-    if (!window->wl.surface)
-        return false;
-
-    wl_surface_add_listener(window->wl.surface,
-                            &surfaceListener,
-                            window);
-
+    if (!window->wl.surface) return false;
+    wl_surface_add_listener(window->wl.surface, &surfaceListener, window);
     wl_surface_set_user_data(window->wl.surface, window);
+
+    if (_glfw.wl.color_manager.has_needed_capabilities) {
+        ensure_color_manager_ready();
+        if (_glfw.wl.color_manager.image_description) {
+            window->wl.color_management = wp_color_manager_v1_get_surface(_glfw.wl.wp_color_manager_v1, window->wl.surface);
+            wp_color_management_surface_v1_set_image_description(window->wl.color_management, _glfw.wl.color_manager.image_description, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
+        }
+    }
 
     // If we already have been notified of the primary monitor scale, assume
     // the window will be created on it and so avoid a rescale roundtrip in the common
@@ -824,7 +834,7 @@ apply_xdg_configure_changes(_GLFWwindow *window) {
         int width = window->wl.pending.width, height = window->wl.pending.height;
         csd_set_window_geometry(window, &width, &height);
         bool resized = dispatchChangesAfterConfigure(window, width, height);
-        csd_set_visible(window, !(window->wl.decorations.serverSide || window->monitor || window->wl.current.toplevel_states & TOPLEVEL_STATE_FULLSCREEN));
+        csd_set_visible(window, csd_should_window_be_decorated(window));
         debug("Final window %llu content size: %dx%d resized: %d\n", window->id, width, height, resized);
     }
 
@@ -859,7 +869,7 @@ create_single_color_buffer(int width, int height, pixel color) {
     float alpha = color.alpha / 255.f;
     color.red = (uint8_t)(alpha * color.red); color.green = (uint8_t)(alpha * color.green); color.blue = (uint8_t)(alpha * color.blue);
     int shm_format = color.alpha == 0xff ? WL_SHM_FORMAT_XRGB8888 : WL_SHM_FORMAT_ARGB8888;
-    const size_t size = 4 * width * height;
+    const size_t size = (size_t)4 * width * height;
     int fd = createAnonymousFile(size);
     if (fd < 0) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: failed to create anonymous file");
@@ -967,7 +977,7 @@ setXdgDecorations(_GLFWwindow* window)
         zxdg_toplevel_decoration_v1_set_mode(window->wl.xdg.decoration, window->decorated ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE: ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
     } else {
         window->wl.decorations.serverSide = false;
-        csd_set_visible(window, window->decorated);
+        csd_set_visible(window, csd_should_window_be_decorated(window));
     }
 }
 
@@ -1437,7 +1447,7 @@ int _glfwPlatformCreateWindow(
     strncpy(window->wl.appId, wndconfig->wl.appId, sizeof(window->wl.appId));
     window->swaps_disallowed = true;
 
-    if (!createSurface(window, wndconfig)) return false;
+    if (!create_surface(window, wndconfig)) return false;
     if (wndconfig->title) window->wl.title = _glfw_strdup(wndconfig->title);
     if (wndconfig->maximized) window->wl.maximize_on_first_show = true;
     if (wndconfig->visible) {
@@ -1513,6 +1523,9 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
     if (window->wl.layer_shell.zwlr_layer_surface_v1)
         zwlr_layer_surface_v1_destroy(window->wl.layer_shell.zwlr_layer_surface_v1);
 
+    if (window->wl.color_management)
+        wp_color_management_surface_v1_destroy(window->wl.color_management);
+
     if (window->wl.surface)
         wl_surface_destroy(window->wl.surface);
 
@@ -1556,7 +1569,7 @@ _glfwPlatformSetWindowIcon(_GLFWwindow* window, int count, const GLFWimage* imag
     struct wl_buffer* *buffers = malloc(sizeof(struct wl_buffer*) * count);
     if (!buffers) return;
     size_t total_data_size = 0;
-    for (int i = 0; i < count; i++) total_data_size += images[i].width * images[i].height * 4;
+    for (int i = 0; i < count; i++) total_data_size += (size_t)images[i].width * images[i].height * 4;
     int fd = createAnonymousFile(total_data_size);
     if (fd < 0) {
         _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Creating a buffer file for %ld B failed: %s", (long)total_data_size, strerror(errno));
@@ -1574,7 +1587,7 @@ _glfwPlatformSetWindowIcon(_GLFWwindow* window, int count, const GLFWimage* imag
     struct xdg_toplevel_icon_v1 *icon = xdg_toplevel_icon_manager_v1_create_icon(_glfw.wl.xdg_toplevel_icon_manager_v1);
     size_t pos = 0;
     for (int i = 0; i < count; i++) {
-        const size_t sz = images[i].width * images[i].height * 4;
+        const size_t sz = (size_t)images[i].width * images[i].height * 4;
         convert_glfw_image_to_wayland_image(images + i, data + pos);
         buffers[i] = wl_shm_pool_create_buffer(
                 pool, pos, images[i].width, images[i].height, images[i].width * 4, WL_SHM_FORMAT_ARGB8888);
@@ -1632,7 +1645,7 @@ void _glfwPlatformSetWindowSize(_GLFWwindow* window, int width, int height)
         csd_set_window_geometry(window, &w, &h);
         window->wl.width = w; window->wl.height = h;
         resizeFramebuffer(window);
-        csd_set_visible(window, true);  // resizes the csd iff the window currently has csd
+        csd_set_visible(window, csd_should_window_be_decorated(window));  // resizes the csd iff the window currently has csd
         commit_window_surface_if_safe(window);
         inform_compositor_of_window_geometry(window, "SetWindowSize");
     }
@@ -1743,7 +1756,7 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow* window)
     }
 }
 
-void _glfwPlatformShowWindow(_GLFWwindow* window)
+void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen UNUSED)
 {
     if (!window->wl.visible) {
         if (!window->wl.created) {
@@ -2857,6 +2870,8 @@ GLFWAPI struct wl_display* glfwGetWaylandDisplay(void)
 GLFWAPI struct wl_surface* glfwGetWaylandWindow(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
     _GLFW_REQUIRE_INIT_OR_RETURN(NULL);
     return window->wl.surface;
 }

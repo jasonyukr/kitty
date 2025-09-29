@@ -1,6 +1,7 @@
 import termios
 from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Tuple, TypedDict, Union, overload
 
+from kitty.borders import Border
 from kitty.boss import Boss
 from kitty.fonts import VariableData
 from kitty.fonts.render import FontObject
@@ -15,6 +16,10 @@ from kitty.typing_compat import EdgeLiteral, NotRequired, ReadableBuffer, Writea
 SCALE_BITS: int
 WIDTH_BITS: int
 SUBSCALE_BITS: int
+COLOR_IS_SPECIAL: int
+COLOR_NOT_SET: int
+COLOR_IS_RGB: int
+COLOR_IS_INDEX: int
 GLFW_LAYER_SHELL_NONE: int
 GLFW_LAYER_SHELL_PANEL: int
 GLFW_LAYER_SHELL_TOP: int
@@ -270,15 +275,17 @@ NO_CURSOR_SHAPE: int
 CURSOR_UNDERLINE: int
 DECAWM: int
 BGIMAGE_PROGRAM: int
-CELL_BG_PROGRAM: int
-CELL_FG_PROGRAM: int
 CELL_PROGRAM: int
-CELL_SPECIAL_PROGRAM: int
+CELL_FG_PROGRAM: int
+CELL_BG_PROGRAM: int
+BLIT_PROGRAM: int
+ROUNDED_RECT_PROGRAM: int
 DECORATION: int
+BLINK: int
 DIM: int
 GRAPHICS_ALPHA_MASK_PROGRAM: int
-GRAPHICS_PREMULT_PROGRAM: int
 GRAPHICS_PROGRAM: int
+GRAPHICS_PREMULT_PROGRAM: int
 MARK: int
 MARK_MASK: int
 DECORATION_MASK: int
@@ -380,6 +387,8 @@ def cmdline_of_process(pid: int) -> List[str]:
 def cwd_of_process(pid: int) -> str:
     pass
 
+
+def abspath_of_process(pid: int) -> str: ...
 
 def default_color_table() -> Tuple[int, ...]:
     pass
@@ -545,17 +554,10 @@ def set_os_window_chrome(os_window_id: int) -> bool:
     pass
 
 
-def add_borders_rect(
-    os_window_id: int, tab_id: int, left: int, top: int, right: int,
-    bottom: int, color: int
-) -> None:
-    pass
+def set_borders_rects(os_window_id: int, tab_id: int, rects: list[Border]) -> None: ...
 
 
 def init_borders_program() -> None:
-    pass
-
-def init_trail_program() -> None:
     pass
 
 def os_window_has_background_image(os_window_id: int) -> bool:
@@ -607,7 +609,7 @@ def create_os_window(
     wm_class_name: str,
     wm_class_class: str,
     window_state: Optional[int] = WINDOW_NORMAL,
-    load_programs: Optional[Callable[[bool], None]] = None,
+    load_programs: Optional[Callable[[], None]] = None,
     x: Optional[int] = None,
     y: Optional[int] = None,
     disallow_override_title: bool = False,
@@ -1198,6 +1200,7 @@ class Cursor:
     bold: bool
     italic: bool
     blink: bool
+    text_blink: bool
     shape: int
 
 
@@ -1235,6 +1238,7 @@ class Screen:
     def test_commit_write_buffer(self, inp: memoryview, output: memoryview) -> int: ...
     def test_parse_written_data(self, dump_callback: None = None) -> None: ...
     def hyperlink_for_id(self, hyperlink_id: int) -> str: ...
+    def erase_last_command(self, include_prompt: bool = True) -> bool: ...
 
     def cursor_at_prompt(self) -> bool:
         pass
@@ -1383,7 +1387,8 @@ def set_tab_bar_render_data(
 
 def set_window_render_data(
     os_window_id: int, tab_id: int, window_id: int, screen: Screen,
-    left: int, top: int, right: int, bottom: int
+    left: int, top: int, right: int, bottom: int,
+    spaces_left: int, spaces_top: int, spaces_right: int, spaces_bottom: int
 ) -> None:
     pass
 
@@ -1531,6 +1536,9 @@ def send_mouse_event(
 def set_window_logo(os_window_id: int, tab_id: int, window_id: int, path: str, position: str, alpha: float, png_data: bytes = b'') -> None:
     pass
 
+
+def get_window_logo_settings_if_not_default(os_window_id: int, tab_id: int, window_id: int) -> None | tuple[
+        str, float, tuple[float, float, float, float]]: ...
 
 def apply_options_update() -> None:
     pass
@@ -1711,7 +1719,7 @@ def get_docs_ref_map() -> bytes: ...
 def set_clipboard_data_types(ct: int, mime_types: Tuple[str, ...]) -> None: ...
 def get_clipboard_mime(ct: int, mime: Optional[str], callback: Callable[[bytes], None]) -> None: ...
 def run_with_activation_token(func: Callable[[str], None]) -> bool: ...
-def toggle_os_window_visibility(os_window_id: int, visible: Literal[True, False] = ...) -> bool: ...
+def toggle_os_window_visibility(os_window_id: int, visible: bool | Literal[-1] = -1, move_to_active_screen: bool = False) -> bool: ...
 def parse_cli_from_spec(args: list[str], names_map: dict[str, OptionDict], defval_map: dict[str, Any]) -> tuple[dict[str, tuple[Any, bool]], list[str]]: ...
 def layer_shell_config_for_os_window(os_window_id: int) -> dict[str, Any] | None: ...
 def set_layer_shell_config(os_window_id: int, cfg: LayerShellConfig) -> bool: ...
@@ -1738,7 +1746,7 @@ def terminfo_data() -> bytes:...
 def wayland_compositor_data() -> Tuple[int, Optional[str]]:...
 def monotonic() -> float: ...
 def timed_debug_print(x: str) -> None: ...
-def opengl_version_string() -> str: ...
+def gpu_driver_version_string() -> str: ...
 def systemd_move_pid_into_new_scope(pid: int, scope_name: str, description: str) -> str: ...
 def play_desktop_sound_async(name: str, event_id: str = 'test sound', is_path: bool = False, theme_name: str = '') -> str: ...
 def cocoa_play_system_sound_by_id_async(sound_id: int) -> None: ...

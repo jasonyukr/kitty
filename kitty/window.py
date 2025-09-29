@@ -19,6 +19,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Deque,
+    Iterator,
     Literal,
     NamedTuple,
     Optional,
@@ -26,13 +27,14 @@ from typing import (
 )
 
 from .child import ProcessDesc
-from .cli_stub import CLIOptions
+from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .clipboard import ClipboardRequestManager, set_clipboard_string
 from .constants import (
     appname,
     clear_handled_signals,
     config_dir,
     kitten_exe,
+    unserialize_launch_flag,
     wakeup_io_loop,
 )
 from .fast_data_types import (
@@ -67,6 +69,7 @@ from .fast_data_types import (
     get_click_interval,
     get_mouse_data_for_window,
     get_options,
+    get_window_logo_settings_if_not_default,
     is_css_pointer_name_valid,
     is_modifier_key,
     last_focused_os_window_id,
@@ -88,6 +91,7 @@ from .fast_data_types import (
     wakeup_main_loop,
 )
 from .keys import keyboard_mode_name, mod_mask
+from .notifications import NotificationManager
 from .options.types import Options
 from .progress import Progress
 from .rgb import to_color
@@ -108,7 +112,7 @@ from .utils import (
     sanitize_control_codes,
     sanitize_for_bracketed_paste,
     sanitize_title,
-    sanitize_url_for_dispay_to_user,
+    sanitize_url_for_display_to_user,
     shlex_split,
 )
 
@@ -297,6 +301,7 @@ class Watchers:
     on_title_change: list[Watcher]
     on_cmd_startstop: list[Watcher]
     on_color_scheme_preference_change: list[Watcher]
+    on_tab_bar_dirty: list[Watcher]
 
     def __init__(self) -> None:
         self.on_resize = []
@@ -306,6 +311,7 @@ class Watchers:
         self.on_title_change = []
         self.on_cmd_startstop = []
         self.on_color_scheme_preference_change = []
+        self.on_tab_bar_dirty = []
 
     def add(self, others: 'Watchers') -> None:
         def merge(base: list[Watcher], other: list[Watcher]) -> None:
@@ -319,11 +325,13 @@ class Watchers:
         merge(self.on_title_change, others.on_title_change)
         merge(self.on_cmd_startstop, others.on_cmd_startstop)
         merge(self.on_color_scheme_preference_change, others.on_color_scheme_preference_change)
+        merge(self.on_tab_bar_dirty, others.on_tab_bar_dirty)
 
     def clear(self) -> None:
         del self.on_close[:], self.on_resize[:], self.on_focus_change[:]
         del self.on_set_user_var[:], self.on_title_change[:], self.on_cmd_startstop[:]
         del self.on_color_scheme_preference_change[:]
+        del self.on_tab_bar_dirty[:]
 
     def copy(self) -> 'Watchers':
         ans = Watchers()
@@ -334,12 +342,13 @@ class Watchers:
         ans.on_title_change = self.on_title_change[:]
         ans.on_cmd_startstop = self.on_cmd_startstop[:]
         ans.on_color_scheme_preference_change = self.on_color_scheme_preference_change[:]
+        ans.on_tab_bar_dirty = self.on_tab_bar_dirty[:]
         return ans
 
     @property
     def has_watchers(self) -> bool:
         return bool(self.on_close or self.on_resize or self.on_focus_change or self.on_color_scheme_preference_change
-                    or self.on_set_user_var or self.on_title_change or self.on_cmd_startstop)
+                    or self.on_set_user_var or self.on_title_change or self.on_cmd_startstop or self.on_tab_bar_dirty)
 
 
 def call_watchers(windowref: Callable[[], Optional['Window']], which: str, data: dict[str, Any]) -> None:
@@ -351,6 +360,31 @@ def call_watchers(windowref: Callable[[], Optional['Window']], which: str, data:
             w.call_watchers(watchers, data)
 
     add_timer(callback, 0, False)
+
+
+class WindowCreationSpec(NamedTuple):
+    use_shell: bool = True
+    cmd: list[str] | None = None
+    has_stdin: bool = False
+    override_title: str | None = None
+    cwd_from: CwdRequest | None = None
+    cwd: str | None = None
+    overlay_for: int | None = None
+    env: tuple[tuple[str, str], ...] | None = None
+    location: str | None = None
+    copy_colors_from: int | None = None
+    colors: tuple[str, ...] = ()
+    allow_remote_control: bool = False
+    marker: str | None = None
+    watchers: tuple[str, ...] = ()
+    overlay_behind: bool = False
+    is_clone_launch: str = ''
+    remote_control_passwords: dict[str, Sequence[str]] | None = None
+    hold: bool = False
+    bias: float | None = None
+    hold_after_ssh: bool = False
+    spacing: tuple[str, ...] = ()
+    user_vars: tuple[tuple[str, str], ...] = ()
 
 
 def pagerhist(screen: Screen, as_ansi: bool = False, add_wrap_markers: bool = True, upto_output_start: bool = False) -> str:
@@ -580,6 +614,16 @@ class EdgeWidths:
     def copy(self) -> 'EdgeWidths':
         return EdgeWidths(self.serialize())
 
+    def as_launch_args(self, prefix: str = 'padding') -> Iterator[str]:
+        if self.left is not None:
+            yield f'--spacing={prefix}-left={self.left}'
+        if self.right is not None:
+            yield f'--spacing={prefix}-left={self.right}'
+        if self.top is not None:
+            yield f'--spacing={prefix}-left={self.top}'
+        if self.bottom is not None:
+            yield f'--spacing={prefix}-left={self.bottom}'
+
 
 class GlobalWatchers:
 
@@ -613,6 +657,9 @@ class Window:
     overlay_type = OverlayType.transient
     initial_ignore_focus_changes: bool = False
     initial_ignore_focus_changes_context_manager_in_operation: bool = False
+    creation_spec: WindowCreationSpec | None = None
+    created_in_session_name: str = ''
+    serialized_id: int = 0
 
     @classmethod
     @contextmanager
@@ -778,55 +825,6 @@ class Window:
     def __repr__(self) -> str:
         return f'Window(title={self.title}, id={self.id})'
 
-    def as_dict(self, is_focused: bool = False, is_self: bool = False, is_active: bool = False) -> WindowDict:
-        return {
-            'id': self.id,
-            'is_focused': is_focused,
-            'is_active': is_active,
-            'title': self.title,
-            'pid': self.child.pid,
-            'cwd': self.child.current_cwd or self.child.cwd,
-            'cmdline': self.child.cmdline,
-            'last_reported_cmdline': self.last_cmd_cmdline,
-            'last_cmd_exit_status': self.last_cmd_exit_status,
-            'env': self.child.environ or self.child.final_env,
-            'foreground_processes': self.child.foreground_processes,
-            'is_self': is_self,
-            'at_prompt': self.at_prompt,
-            'lines': self.screen.lines,
-            'columns': self.screen.columns,
-            'user_vars': self.user_vars,
-            'created_at': self.created_at,
-            'in_alternate_screen': self.screen.is_using_alternate_linebuf(),
-        }
-
-    def serialize_state(self) -> dict[str, Any]:
-        ans = {
-            'version': 1,
-            'id': self.id,
-            'child_title': self.child_title,
-            'override_title': self.override_title,
-            'default_title': self.default_title,
-            'title_stack': list(self.title_stack),
-            'allow_remote_control': self.allow_remote_control,
-            'remote_control_passwords': self.remote_control_passwords,
-            'cwd': self.child.current_cwd or self.child.cwd,
-            'env': self.child.environ,
-            'cmdline': self.child.cmdline,
-            'last_reported_cmdline': self.last_cmd_cmdline,
-            'last_cmd_exit_status': self.last_cmd_exit_status,
-            'margin': self.margin.serialize(),
-            'user_vars': self.user_vars,
-            'padding': self.padding.serialize(),
-        }
-        if self.window_custom_type:
-            ans['window_custom_type'] = self.window_custom_type
-        if self.overlay_type is not OverlayType.transient:
-            ans['overlay_type'] = self.overlay_type.value
-        if self.user_vars:
-            ans['user_vars'] = self.user_vars
-        return ans
-
     @property
     def overlay_parent(self) -> Optional['Window']:
         tab = self.tabref()
@@ -846,7 +844,7 @@ class Window:
     def has_running_program(self) -> bool:
         return not self.at_prompt
 
-    def matches(self, field: str, pat: MatchPatternType) -> bool:
+    def matches(self, field: str, pat: MatchPatternType, active_session: str, most_recent_session: str) -> bool:
         if isinstance(pat, tuple):
             if field == 'env':
                 return key_val_matcher(self.child.environ.items(), *pat)
@@ -867,9 +865,21 @@ class Window:
                 if pat.search(x) is not None:
                     return True
             return False
+        if field == 'session':
+            match pat.pattern:
+                case '.':
+                    return self.created_in_session_name == active_session
+                case '~':
+                    return self.created_in_session_name == active_session or self.created_in_session_name == most_recent_session
+
+            return pat.search(self.created_in_session_name) is not None
         return False
 
-    def matches_query(self, field: str, query: str, active_tab: TabType | None = None, self_window: Optional['Window'] = None) -> bool:
+    def matches_query(
+        self, field: str, query: str, active_tab: TabType | None = None,
+        self_window: Optional['Window'] = None, active_session: str = '',
+        most_recent_session: str = '',
+    ) -> bool:
         if field in ('num', 'recent'):
             if active_tab is not None:
                 try:
@@ -918,7 +928,7 @@ class Window:
             return gid is not None and t.windows.active_window_in_group_id(gid) is self
 
         pat = compile_match_query(query, field not in ('env', 'var'))
-        return self.matches(field, pat)
+        return self.matches(field, pat, active_session, most_recent_session)
 
     def set_visible_in_layout(self, val: bool) -> None:
         val = bool(val)
@@ -965,7 +975,9 @@ class Window:
             mark_os_window_dirty(self.os_window_id)
 
         self.geometry = g = new_geometry
-        set_window_render_data(self.os_window_id, self.tab_id, self.id, self.screen, *g[:4])
+        set_window_render_data(self.os_window_id, self.tab_id, self.id, self.screen,
+                             g.left, g.top, g.right, g.bottom,
+                             g.spaces.left, g.spaces.top, g.spaces.right, g.spaces.bottom)
         self.update_effective_padding()
         if update_ime_position:
             update_ime_position_for_window(self.id, True)
@@ -1195,7 +1207,7 @@ class Window:
             if opts.allow_hyperlinks & 0b10:
                 from kittens.tui.operations import styled
                 boss.choose(
-                    'What would you like to do with this URL:\n' + styled(sanitize_url_for_dispay_to_user(url), fg='yellow'),
+                    'What would you like to do with this URL:\n' + styled(sanitize_url_for_display_to_user(url), fg='yellow'),
                     partial(self.hyperlink_open_confirmed, url, cwd),
                     'o:Open', 'c:Copy to clipboard', 'n;red:Nothing', default='o',
                     window=self, title=_('Hyperlink activated'),
@@ -1467,8 +1479,7 @@ class Window:
         self.kitten_result_processors.append(callback)
 
     def handle_overlay_ready(self, msg: memoryview) -> None:
-        boss = get_boss()
-        tab = boss.tab_for_window(self)
+        tab = self.tabref()
         if tab is not None:
             tab.move_window_to_top_of_group(self)
         if self.keys_redirected_till_ready_from:
@@ -1605,15 +1616,22 @@ class Window:
             cmd.only_when = OnlyWhen(when)
             if not nm.is_notification_allowed(cmd, self.id):
                 return
-            if action == 'notify':
-                if self.last_cmd_end_notification is not None:
+
+            def notify(window: Window, opts: Options, nm: NotificationManager) -> None:
+                if window.last_cmd_end_notification is not None:
                     if 'next' in opts.notify_on_cmd_finish.clear_on:
-                        nm.close_notification(self.last_cmd_end_notification[0])
-                    self.last_cmd_end_notification = None
-                notification_id = nm.notify_with_command(cmd, self.id)
+                        nm.close_notification(window.last_cmd_end_notification[0])
+                    window.last_cmd_end_notification = None
+                notification_id = nm.notify_with_command(cmd, window.id)
                 if notification_id is not None:
-                    self.last_cmd_end_notification = notification_id, cmd.only_when
+                    window.last_cmd_end_notification = notification_id, cmd.only_when
+
+            if action == 'notify':
+                notify(self, opts, nm)
             elif action == 'bell':
+                self.screen.bell()
+            elif action == 'notify-bell':
+                notify(self, opts, nm)
                 self.screen.bell()
             elif action == 'command':
                 open_cmd([x.replace('%c', self.last_cmd_cmdline).replace('%s', exit_status) for x in notify_cmdline])
@@ -1779,19 +1797,22 @@ class Window:
     def child_is_remote(self) -> bool:
         for p in self.child.foreground_processes:
             q = list(p['cmdline'] or ())
-            if q and q[0].lower() == 'ssh':
+            if q and os.path.basename(q[0]).lower() == 'ssh':
                 return True
         return False
 
-    def ssh_kitten_cmdline(self) -> list[str]:
+    def ssh_kitten_cmdline_with_pid(self) -> tuple[int, list[str]]:
         from kittens.ssh.utils import is_kitten_cmdline
         for p in self.child.foreground_processes:
             q = list(p['cmdline'] or ())
             if len(q) > 3 and os.path.basename(q[0]) == 'kitten' and q[1] == 'run-shell':
                 q = q[2:]  # --hold-after-ssh causes kitten run-shell wrapper to be added
             if is_kitten_cmdline(q):
-                return q
-        return []
+                return p['pid'], q
+        return -1, []
+
+    def ssh_kitten_cmdline(self) -> list[str]:
+        return self.ssh_kitten_cmdline_with_pid()[1]
 
     def pipe_data(self, text: str, has_wrap_markers: bool = False) -> PipeData:
         text = text or ''
@@ -1906,6 +1927,156 @@ class Window:
         ' Return the last position at which a mouse event was received by this window '
         return get_mouse_data_for_window(self.os_window_id, self.tab_id, self.id)
 
+    # Serialization {{{
+    def as_dict(self, is_focused: bool = False, is_self: bool = False, is_active: bool = False) -> WindowDict:
+        return {
+            'id': self.id,
+            'is_focused': is_focused,
+            'is_active': is_active,
+            'title': self.title,
+            'pid': self.child.pid,
+            'cwd': self.child.current_cwd or self.child.cwd,
+            'cmdline': self.child.cmdline,
+            'last_reported_cmdline': self.last_cmd_cmdline,
+            'last_cmd_exit_status': self.last_cmd_exit_status,
+            'env': self.child.environ or self.child.final_env,
+            'foreground_processes': self.child.foreground_processes,
+            'is_self': is_self,
+            'at_prompt': self.at_prompt,
+            'lines': self.screen.lines,
+            'columns': self.screen.columns,
+            'user_vars': self.user_vars,
+            'created_at': self.created_at,
+            'in_alternate_screen': self.screen.is_using_alternate_linebuf(),
+        }
+
+    def serialize_state(self) -> dict[str, Any]:
+        ans = {
+            'version': 1,
+            'id': self.id,
+            'child_title': self.child_title,
+            'override_title': self.override_title,
+            'default_title': self.default_title,
+            'title_stack': list(self.title_stack),
+            'allow_remote_control': self.allow_remote_control,
+            'remote_control_passwords': self.remote_control_passwords,
+            'cwd': self.child.current_cwd or self.child.cwd,
+            'env': self.child.environ,
+            'cmdline': self.child.cmdline,
+            'last_reported_cmdline': self.last_cmd_cmdline,
+            'last_cmd_exit_status': self.last_cmd_exit_status,
+            'margin': self.margin.serialize(),
+            'user_vars': self.user_vars,
+            'padding': self.padding.serialize(),
+        }
+        if self.window_custom_type:
+            ans['window_custom_type'] = self.window_custom_type
+        if self.overlay_type is not OverlayType.transient:
+            ans['overlay_type'] = self.overlay_type.value
+        if self.user_vars:
+            ans['user_vars'] = self.user_vars
+        return ans
+
+    @property
+    def cwd_for_serialization(self) -> str:
+        cwd = self.get_cwd_of_child(oldest=False) or self.get_cwd_of_child(oldest=True) or self.child.cwd
+        if self.screen.last_reported_cwd and self.at_prompt and not self.child_is_remote:
+            cwd = path_from_osc7_url(self.screen.last_reported_cwd) or cwd
+        return cwd
+
+    def as_launch_command(self, ser_opts: SaveAsSessionOptions, cwd: str, is_overlay: bool = False) -> list[str]:
+        ' Return a launch command that can be used to serialize this window. Empty list indicates not serializable. '
+        if self.actions_on_close or self.actions_on_focus_change or self.actions_on_removal:
+            # such windows are typically UI kittens. The actions are not
+            # serializable anyway, so skip.
+            return []
+        ans = ['launch']
+        if cwd:
+            ans.append(f'--cwd={cwd}')
+        if self.allow_remote_control:
+            ans.append('--allow-remote-control')
+        if self.remote_control_passwords:
+            import shlex
+            for pw, rcp_items in self.remote_control_passwords.items():
+                ans.append(f'--remote-control-password={shlex.join((pw,) + tuple(rcp_items))}')
+        if self.creation_spec:
+            if self.creation_spec.env:
+                for k, v in self.creation_spec.env:
+                    if k not in ('KITTY_PIPE_DATA',):
+                        ans.append(f'--env={k}={v}')
+            for cs in self.creation_spec.colors:
+                ans.append(f'--color={cs}')
+            for wr in self.creation_spec.watchers:
+                ans.append(f'--watcher={wr}')
+            if self.creation_spec.hold:
+                ans.append('--hold')
+            if self.creation_spec.hold_after_ssh:
+                ans.append('--hold-after-ssh')
+        ans.extend(f'--var={k}={v}' for k, v in self.user_vars.items())
+        ans.extend(self.padding.as_launch_args())
+        ans.extend(self.margin.as_launch_args('margin'))
+        if self.override_title:
+            ans.append(f'--title={self.override_title}')
+        wl = get_window_logo_settings_if_not_default(self.os_window_id, self.tab_id, self.id)
+        if wl is not None:
+            logo_path, logo_alpha, logo_pos = wl
+            ans.extend((f'--logo={logo_path}', f'--logo-alpha={logo_alpha}'))
+            xpos = ypos = ''
+            if logo_pos[0] == logo_pos[2] != 0.5:
+                xpos = 'right' if logo_pos[0] else 'left'
+            if logo_pos[1] == logo_pos[3] != 0.5:
+                ypos = 'bottom' if logo_pos[1] else 'top'
+            lpos = 'center'
+            if xpos or ypos:
+                lpos = (f'{ypos}-{xpos}' if ypos else xpos) if xpos else ypos
+            ans.append(f'--logo-position={lpos}')
+
+        if is_overlay:
+            t = 'overlay-main' if self.overlay_type is OverlayType.main else 'overlay'
+            ans.append(f'--type={t}')
+
+        from kittens.ssh.utils import is_kitten_cmdline as is_ssh_kitten_cmdline
+        from kittens.ssh.utils import remove_env_var_from_cmdline, set_cwd_in_cmdline, set_single_env_var_in_cmdline
+        cmd: list[str] = []
+        if self.creation_spec and self.creation_spec.cmd:
+            if self.creation_spec.cmd != resolved_shell(get_options()):
+                cmd = self.creation_spec.cmd
+                if is_ssh_kitten_cmdline(cmd):
+                    if self.at_prompt:
+                        if self.screen.last_reported_cwd:
+                            set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), cmd)
+        unserialize_data: dict[str, int | list[str] | str] = {'id': self.id}
+        if not cmd and ser_opts.use_foreground_process:
+            def make_exe_absolute(cmd: list[str], pid: int) -> None:
+                if cmd and not os.path.isabs(cmd[0]):
+                    with suppress(Exception):
+                        from .child import abspath_of_exe
+                        cmd[0] = abspath_of_exe(pid)
+            kssh_cmdline = self.ssh_kitten_cmdline()
+            if kssh_cmdline:
+                remove_env_var_from_cmdline('KITTY_SI_RUN_COMMAND_AT_STARTUP', kssh_cmdline)
+                if self.at_prompt:
+                    if self.screen.last_reported_cwd:
+                        set_cwd_in_cmdline(path_from_osc7_url(self.screen.last_reported_cwd), kssh_cmdline)
+                else:
+                    if self.last_cmd_cmdline:
+                        set_single_env_var_in_cmdline('KITTY_SI_RUN_COMMAND_AT_STARTUP', self.last_cmd_cmdline, kssh_cmdline)
+                unserialize_data['cmd_at_shell_startup'] = kssh_cmdline
+            elif not self.at_prompt:
+                if self.last_cmd_cmdline:
+                    unserialize_data['cmd_at_shell_startup'] = self.last_cmd_cmdline
+                elif self.child.pid != (pid := self.child.pid_for_cwd) and pid is not None:
+                    # we have a shell running some command
+                    with suppress(Exception):
+                        fcmd = self.child.cmdline_of_pid(pid)
+                        if fcmd:
+                            make_exe_absolute(fcmd, pid)
+                            unserialize_data['cmd_at_shell_startup'] = fcmd
+        ans.insert(1, unserialize_launch_flag + json.dumps(unserialize_data))
+        ans.extend(cmd)
+        return ans
+    # }}}
+
     # actions {{{
 
     @ac('cp', 'Show scrollback in a pager like less')
@@ -1985,6 +2156,15 @@ class Window:
         else:
             self.scroll_end()
             self.write_to_child(self.encoded_key(KeyEvent(key=ord('c'), mods=GLFW_MOD_CONTROL)))
+
+    @ac('cp', 'Copy the selected text from the active window to the clipboard, if no selection,'
+        ' pass the key through to the application running in the terminal.')
+    def copy_or_noop(self) -> bool:
+        text = self.text_for_selection()
+        if text:
+            set_clipboard_string(text)
+            return False
+        return True
 
     @ac('cp', 'Copy the selected text from the active window to the clipboard and clear selection, if no selection, send SIGINT (aka :kbd:`ctrl+c`)')
     def copy_and_clear_or_interrupt(self) -> None:

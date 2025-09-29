@@ -20,6 +20,7 @@ definition.add_deprecation('deprecated_hide_window_decorations_aliases', 'x11_hi
 definition.add_deprecation('deprecated_macos_show_window_title_in_menubar_alias', 'macos_show_window_title_in_menubar')
 definition.add_deprecation('deprecated_send_text', 'send_text')
 definition.add_deprecation('deprecated_adjust_line_height', 'adjust_line_height', 'adjust_column_width', 'adjust_baseline')
+definition.add_deprecation('deprecated_scrollback_indicator_opacity', 'scrollback_indicator_opacity')
 
 agr = definition.add_group
 egr = definition.end_group
@@ -363,17 +364,17 @@ it will go from opaque to transparent and then back again over the next half. Yo
 different easing functions for the two halves, for example: :code:`-1 linear ease-out`. kitty
 supports all the :link:`CSS easing functions <https://developer.mozilla.org/en-US/docs/Web/CSS/easing-function>`.
 Note that turning on animations uses extra power as it means the screen is redrawn multiple times
-per blink interval. See also, :opt:`cursor_stop_blinking_after`.
-'''
-    )
+per blink interval. See also, :opt:`cursor_stop_blinking_after`. This setting also controls blinking
+text, which blinks in exact rhythm with the cursor.
+''')
 
 opt('cursor_stop_blinking_after', '15.0',
     option_type='positive_float', ctype='time',
     long_text='''
 Stop blinking cursor after the specified number of seconds of keyboard
-inactivity. Set to zero to never stop blinking.
-'''
-    )
+inactivity. Set to zero to never stop blinking. This setting also controls
+blinking text, which blinks in exact rhythm with the cursor.
+''')
 
 opt('cursor_trail', '0',
     option_type='positive_int', ctype='time-ms',
@@ -388,8 +389,7 @@ than the specified number of milliseconds. This prevents trails from appearing
 for cursors that rapidly change their positions during UI updates in complex applications.
 See :opt:`cursor_trail_decay` to control the animation speed and :opt:`cursor_trail_start_threshold`
 to control when a cursor trail is started.
-'''
-    )
+''')
 
 opt('cursor_trail_decay', '0.1 0.4',
     option_type='cursor_trail_decay',
@@ -402,8 +402,7 @@ fastest decay time (minimum), and the second value corresponds to the slowest
 decay time (maximum). The second value must be equal to or greater than the
 first value. Smaller values result in a faster decay of the cursor trail.
 Adjust these values to control how quickly the cursor trail fades away.
-''',
-    )
+''')
 
 opt('cursor_trail_start_threshold', '2',
     option_type='positive_int', ctype='int',
@@ -413,8 +412,18 @@ positive integer value that represents the minimum number of cells the
 cursor must move before the trail is started. When the cursor moves less than
 this threshold, the trail is skipped, reducing unnecessary cursor trail
 animation.
-'''
-    )
+''')
+
+opt('cursor_trail_color', 'none',
+    option_type='to_color_or_none',
+    ctype='!cursor_trail_color',
+    long_text='''
+Set the color of the cursor trail when :opt:`cursor_trail` is enabled.
+If set to 'none' (the default), the cursor trail will use the cursor's
+background color. Otherwise, specify a color value (e.g., #ff0000 for red,
+or a named color like 'red'). This allows you to customize the appearance
+of the cursor trail independently of the cursor color.
+''')
 
 egr()  # }}}
 
@@ -433,13 +442,81 @@ is changed it will only affect newly created windows, not existing ones.
 '''
     )
 
-opt('scrollback_indicator_opacity', '1.0',
-    option_type='unit_float', ctype='float', long_text='''
-The opacity of the scrollback indicator which is a small colored rectangle that moves
-along the right hand side of the window as you scroll, indicating what fraction you
-have scrolled. The default is one which means fully opaque, aka visible.
-Set to a value between zero and one to make the indicator less visible.''')
+opt('scrollbar', 'scrolled', ctype='scrollbar', choices=(
+    'scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered'), long_text='''\
+Control when the scrollbar is displayed.
 
+:code:`scrolled`
+    means when the scrolling backwards has started.
+:code:`hovered`
+    means when the mouse is hovering on the right edge of the window.
+:code:`scrolled-and-hovered`
+    means when the mouse is over the scrollbar region *and* scrolling backwards has started.
+:code:`always`
+    means whenever any scrollback is present
+:code:`never`
+    means disable the scrollbar.
+''')
+
+opt('scrollbar_interactive', 'yes', option_type='to_bool', ctype='bool', long_text='''
+If disabled, the scrollbar will not be controllable via th emouse and all mouse events
+will pass through the scrollbar.''')
+
+opt('scrollbar_jump_on_click', 'yes', option_type='to_bool', ctype='bool', long_text='''
+When enabled clicking in the scrollbar track will cause the scroll position to
+jump to the clicked location, otherwise the scroll position will only move
+towards the position by a single screenful, which is how traditional scrollbars behave.''')
+
+opt('scrollbar_width', '0.5', option_type='positive_float', ctype='float', long_text='''
+The width of the scroll bar in units of cell width.
+''')
+
+opt('scrollbar_hover_width', '1', option_type='positive_float', ctype='float', long_text='''
+The width of the scroll bar when the mouse is hovering over it, in units of cell width.
+''')
+
+opt('scrollbar_handle_opacity', '0.5', option_type='positive_float', ctype='float', long_text='''
+The opacity of the scrollbar handle, 0 being fully transparent and 1 being full opaque.
+''')
+
+opt('scrollbar_radius', '0.3', option_type='positive_float', ctype='float', long_text='''
+The radius (curvature) of the scrollbar handle in units of cell width. Should be less than
+:opt:`scrollbar_width`.
+''')
+
+opt('scrollbar_gap', '0.1', option_type='positive_float', ctype='float', long_text='''
+The gap between the scrollbar and the window edge in units of cell width.
+''')
+
+opt('scrollbar_min_handle_height', '1', option_type='positive_float', ctype='float', long_text='''
+The minimum height of the scrollbar handle in units of cell height. Prevents the handle
+from becoming too small when there is a lot of scrollback.''')
+
+opt('scrollbar_hitbox_expansion', '0.25', option_type='positive_float', ctype='float', long_text='''
+The extra area around the handle to allow easier grabbing of the scollbar in units of cell width.''')
+
+opt('scrollbar_track_opacity', '0', option_type='positive_float', ctype='float', long_text='''
+The opacity of the scrollbar track, 0 being fully transparent and 1 being full opaque.
+''')
+
+opt('scrollbar_track_hover_opacity', '0.1', option_type='positive_float', ctype='float', long_text='''
+The opacity of the scrollbar track when the mouse is over the scrollbar,
+0 being fully transparent and 1 being full opaque.
+''')
+
+opt('scrollbar_handle_color', 'foreground', option_type='scrollbar_color', ctype='uint', long_text='''
+The color of the scrollbar handle. A value of :code:`foreground` means to use
+the current foreground text color, a value of :code:`selection_background` means to
+use the current selection background color. Also, you can use an
+arbitrary color, such as :code:`#12af59` or :code:`red`.
+''')
+
+opt('scrollbar_track_color', 'foreground', option_type='scrollbar_color', ctype='uint', long_text='''
+The color of the scrollbar track. A value of :code:`foreground` means to use
+the current foreground text color, a value of :code:`selection_background` means to
+use the current selection background color. Also, you can use an
+arbitrary color, such as :code:`#12af59` or :code:`red`.
+''')
 
 opt('scrollback_pager', 'less --chop-long-lines --RAW-CONTROL-CHARS +INPUT_LINE_NUMBER',
     option_type='to_cmdline',
@@ -452,6 +529,14 @@ representing which line should be at the top of the screen. Similarly
 CURSOR_LINE and CURSOR_COLUMN will be replaced by the current cursor position or
 set to 0 if there is no cursor, for example, when showing the last command
 output.
+
+If you would rather use neovim to view the scrollback, use something like this::
+
+    scrollback_pager nvim --cmd 'set eventignore=FileType' +'nnoremap q ZQ' +'call nvim_open_term(0, {})' +'set nomodified nolist' +'$' -
+
+The above works for neovim 0.12 and newer. There is also a dedicated plugin
+:link:`kitty-scrollback.nvim <https://github.com/mikesmithgh/kitty-scrollback.nvim>`
+you can use with more features that works with older neovim as well.
 '''
     )
 
@@ -1380,6 +1465,18 @@ The tab bar style, can be one of:
 '''
     )
 
+opt('tab_bar_filter', '', long_text='''
+A :ref:`search expression <search_syntax>`. Only tabs that match this expression
+will be shown in the tab bar. The currently active tab is :italic:`always` shown,
+regardless of whether it matches or not. When using this option, the tab bar may
+be displayed with less tabs than specified in :opt:`tab_bar_min_tabs`, as evaluating
+the filter is expensive and is done only at display time. This is most useful when
+using :ref:`sessions <sessions>`. An expression of :code:`session:~ or session:^$`
+will show only tabs that belong to the current session or no session. The various
+tab navigation actions such as :ac:`goto_tab`, :ac:`next_tab`, :ac:`previous_tab`, etc.
+are automatically restricted to work only on matching tabs.
+''')
+
 opt('tab_bar_align', 'left',
     choices=('left', 'center', 'right'),
     long_text='''
@@ -1465,6 +1562,10 @@ use :code:`{sup.index}`. All data available is:
     The tab index usable with :ac:`goto_tab N <goto_tab>` shortcuts.
 :code:`layout_name`
     The current layout name.
+:code:`session_name`
+    The name of the kitty session file from which this tab was created, if any.
+:code:`active_session_name`
+    The name of the kitty session file from which the active window in this tab was created, if any.
 :code:`num_windows`
     The number of windows in the tab.
 :code:`num_window_groups`
@@ -1487,6 +1588,14 @@ use :code:`{sup.index}`. All data available is:
 :code:`tab.progress_percent`
     If a command running in a window reports the progress for a task, show this progress as a percentage
     from all windows in the tab, averaged. Empty string is no progress is reported.
+:code:`custom`
+    This will call a function named :code:`draw_title(data)` from the file :file:`tab_bar.py` placed in
+    the kitty config directory. The function will be passed a dictionary of data, the same data that
+    can be used in this template. It can then perform arbitrarily complex processing and return a string.
+    For example: :code:`tab_title_template "{custom}"` will use the output of the function as the tab title.
+    Any print statements in the :code:`draw_title()` will print to the STDOUT of the kitty process, useful
+    for debugging.
+
 
 Note that formatting is done by Python's string formatting machinery, so you can
 use, for instance, :code:`{layout_name[:2].upper()}` to show only the first two
@@ -1586,11 +1695,7 @@ launch your editor. See also :opt:`transparent_background_colors`.
 Be aware that using a value less than 1.0 is a (possibly
 significant) performance hit. When using a low value for this setting, it is
 desirable that you set the :opt:`background` color to a color the matches the
-general color of the desktop background, for best text rendering. Note that
-to workaround window managers not doing gamma-corrected blending kitty
-makes background_opacity non-linear which means, especially for light backgrounds
-you might need to make the value much lower than you expect to get good results,
-see :iss:`6218` for details.
+general color of the desktop background, for best text rendering.
 
 If you want to dynamically change transparency of windows, set
 :opt:`dynamic_background_opacity` to :code:`yes` (this is off by default as it
@@ -1626,6 +1731,7 @@ part is optional. When unspecified, the value of :opt:`background_opacity` is us
 
     transparent_background_colors red@0.5 #00ff00@0.3
 
+Note that you must also set :opt:`background_opacity` to something less than 1 for this setting to work properly.
 '''
 )
 
@@ -1669,8 +1775,7 @@ opt('background_tint', '0.0',
     long_text='''
 How much to tint the background image by the background color. This option
 makes it easier to read the text. Tinting is done using the current background
-color for each window. This option applies only if :opt:`background_opacity` is
-set and transparent windows are supported or :opt:`background_image` is set.
+color for each window. This option applies only if :opt:`background_image` is set.
 Note that when using :ref:`auto_color_scheme` this option is overridden by the color scheme file and must be set inside it to take effect.
 '''
     )
@@ -3385,6 +3490,10 @@ Second, the action to perform. The default is :code:`notify`. The possible value
 :code:`bell`
     Ring the terminal bell.
 
+:code:`notify-bell`
+    Send a desktop notification and ring the terminal bell.
+    The arguments are the same as for `notify`.
+
 :code:`command`
     Run a custom command. All subsequent arguments are the cmdline to run.
 
@@ -3697,10 +3806,12 @@ There is also a :ac:`copy_or_interrupt` action that can be optionally mapped
 to :kbd:`Ctrl+C`. It will copy only if there is a selection and send an
 interrupt otherwise. Similarly, :ac:`copy_and_clear_or_interrupt` will copy
 and clear the selection or send an interrupt if there is no selection.
+The :ac:`copy_or_noop` action will copy if there is a selection and pass
+the key through to the application running in the terminal if there is no selection.
 '''
     )
-map('Copy to clipboard',
-    'copy_to_clipboard cmd+c copy_to_clipboard',
+map('Copy to clipboard or pass through',
+    'copy_or_noop cmd+c copy_or_noop',
     only='macos',
     )
 
@@ -4355,6 +4466,8 @@ You can create shortcuts to clear/reset the terminal. For example::
     map f1 clear_terminal to_cursor active
     # Same as above except cleared lines are moved into scrollback
     map f1 clear_terminal to_cursor_scroll active
+    # Erase the last command and its output (needs shell integration to work)
+    map f1 clear_terminal last_command active
 
 If you want to operate on all kitty windows instead of just the current one, use
 :italic:`all` instead of :italic:`active`.
@@ -4407,6 +4520,11 @@ map('Clear to start',
 
 map('Clear scrollback',
     'clear_scrollback option+cmd+k clear_terminal scrollback active',
+    only='macos',
+    )
+
+map('Clear the last command',
+    'clear_last_command cmd+l clear_terminal last_command active',
     only='macos',
     )
 

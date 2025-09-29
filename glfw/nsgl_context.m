@@ -27,6 +27,7 @@
 //========================================================================
 
 #include "internal.h"
+#include <assert.h>
 
 
 static void makeContextCurrentNSGL(_GLFWwindow* window)
@@ -106,11 +107,21 @@ bool _glfwInitNSGL(void)
     return true;
 }
 
+// We use a globally shared context across all OS Windows so that
+// if all OS Windows are closed the context does not have to be recreated
+// with all associated data lost. On Apple kitty can remain running with no
+// OS Windows.
+static NSOpenGLContext* globally_shared_context = nil;
+
 // Terminate OpenGL support
 //
-void _glfwTerminateNSGL(void)
-{
+void _glfwTerminateNSGL(void) {
+    if (globally_shared_context != nil) {
+        [globally_shared_context release];
+        globally_shared_context = nil;
+    }
 }
+
 
 // Create the OpenGL context
 //
@@ -271,7 +282,7 @@ bool _glfwCreateContextNSGL(_GLFWwindow* window,
         return false;
     }
 
-    NSOpenGLContext* share = nil;
+    NSOpenGLContext* share = globally_shared_context;
 
     if (ctxconfig->share)
         share = ctxconfig->share->context.nsgl.object;
@@ -284,6 +295,9 @@ bool _glfwCreateContextNSGL(_GLFWwindow* window,
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
                         "NSGL: Failed to create OpenGL context");
         return false;
+    }
+    if (globally_shared_context == nil) {
+        globally_shared_context = [window->context.nsgl.object retain];
     }
 
     if (fbconfig->transparent)
@@ -319,6 +333,8 @@ bool _glfwCreateContextNSGL(_GLFWwindow* window,
 GLFWAPI id glfwGetNSGLContext(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
     _GLFW_REQUIRE_INIT_OR_RETURN(nil);
 
     if (window->context.client == GLFW_NO_API)

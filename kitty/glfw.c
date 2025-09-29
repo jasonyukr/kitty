@@ -11,7 +11,6 @@
 #include "control-codes.h"
 #include <structmember.h>
 #include "glfw-wrapper.h"
-#include "gl.h"
 #ifdef __APPLE__
 #include "cocoa_window.h"
 #else
@@ -179,7 +178,7 @@ static void get_window_content_scale(GLFWwindow *w, float *xscale, float *yscale
 static bool
 set_layer_shell_config_for(OSWindow *w, GLFWLayerShellConfig *lsc) {
     if (lsc) {
-        lsc->related.background_opacity = w->background_opacity;
+        lsc->related.background_opacity = effective_os_window_alpha(w);
         lsc->related.background_blur = OPT(background_blur);
         lsc->related.color_space = OPT(macos_colorspace);
         w->hide_on_focus_loss = lsc->hide_on_focus_loss;
@@ -300,22 +299,6 @@ cursor_active_callback(GLFWwindow *w, monotonic_t now) {
     }
 }
 
-void
-blank_os_window(OSWindow *osw) {
-    color_type color = OPT(background);
-    if (osw->num_tabs > 0) {
-        Tab *t = osw->tabs + osw->active_tab;
-        if (t->num_windows == 1) {
-            Window *w = t->windows + t->active_window;
-            Screen *s = w->render_data.screen;
-            if (s) {
-                color = colorprofile_to_color(s->color_profile, s->color_profile->overridden.default_bg, s->color_profile->configured.default_bg).rgb;
-            }
-        }
-    }
-    blank_canvas(osw->is_semi_transparent ? osw->background_opacity : 1.0f, color);
-}
-
 static void
 window_pos_callback(GLFWwindow* window, int x UNUSED, int y UNUSED) {
     if (!set_callback_window(window)) return;
@@ -425,7 +408,7 @@ framebuffer_size_callback(GLFWwindow *w, int width, int height) {
         window->live_resize.width = MAX(0, width); window->live_resize.height = MAX(0, height);
         window->live_resize.num_of_resize_events++;
         make_os_window_context_current(window);
-        update_surface_size(width, height, 0);
+        set_gpu_viewport(width, height);
         request_tick_callback();
     } else log_error("Ignoring resize request for tiny size: %dx%d", width, height);
     global_state.callback_os_window = NULL;
@@ -603,9 +586,9 @@ scroll_callback(GLFWwindow *w, double xoffset, double yoffset, int flags, int mo
 static id_type focus_counter = 0;
 
 static void
-set_os_window_visibility(OSWindow *w, int set_visible) {
+set_os_window_visibility(OSWindow *w, int set_visible, bool move_to_active_screen) {
     if (set_visible) {
-        glfwShowWindow(w->handle);
+        glfwShowWindow(w->handle, move_to_active_screen);
         w->needs_render = true;
         w->keep_rendering_till_swap = 256;  // try this many times
         request_tick_callback();
@@ -615,7 +598,7 @@ set_os_window_visibility(OSWindow *w, int set_visible) {
 static void
 update_os_window_visibility_based_on_focus(id_type timer_id UNUSED, void*d) {
     OSWindow * osw = os_window_for_id((uintptr_t)d);
-    if (osw && osw->hide_on_focus_loss && !osw->is_focused) set_os_window_visibility(osw, 0);
+    if (osw && osw->hide_on_focus_loss && !osw->is_focused) set_os_window_visibility(osw, 0, false);
 }
 
 static void
@@ -738,7 +721,7 @@ apple_url_open_callback(const char* url) {
 
 
 bool
-draw_window_title(OSWindow *window UNUSED, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
+draw_window_title(double font_sz_pts UNUSED, double ydpi UNUSED, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
     static char buf[2048];
     strip_csi_(text, buf, arraysz(buf));
     return cocoa_render_line_of_text(buf, fg, bg, output_buf, width, height);
@@ -754,24 +737,26 @@ draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_heigh
 
 #else
 
-static FreeTypeRenderCtx csd_title_render_ctx = NULL;
+static FreeTypeRenderCtx bold_render_ctx = NULL, normal_render_ctx = NULL;
 
-static bool
-ensure_csd_title_render_ctx(void) {
-    if (!csd_title_render_ctx) {
-        csd_title_render_ctx = create_freetype_render_context(NULL, true, false);
-        if (!csd_title_render_ctx) {
+static FreeTypeRenderCtx
+freetype_render_ctx(bool bold) {
+    FreeTypeRenderCtx *which = bold ? &bold_render_ctx : &normal_render_ctx;
+    if (!*which) {
+        *which = create_freetype_render_context(NULL, bold, false);
+        if (!*which) {
             if (PyErr_Occurred()) PyErr_Print();
-            return false;
+            return NULL;
         }
     }
-    return true;
+    return *which;
 }
 
 static bool
 draw_text_callback(GLFWwindow *window, const char *text, uint32_t fg, uint32_t bg, uint8_t *output_buf, size_t width, size_t height, float x_offset, float y_offset, size_t right_margin, bool is_single_glyph) {
     if (!set_callback_window(window)) return false;
-    if (!ensure_csd_title_render_ctx()) return false;
+    FreeTypeRenderCtx ctx;
+    if (!(ctx = freetype_render_ctx(true))) return false;
     double xdpi, ydpi;
     get_window_dpi(window, &xdpi, &ydpi);
     unsigned px_sz = 2 * height / 3;
@@ -780,20 +765,21 @@ draw_text_callback(GLFWwindow *window, const char *text, uint32_t fg, uint32_t b
         snprintf(title, sizeof(title), " ❭ %s", text);
         text = title;
     }
-    bool ok = render_single_line(csd_title_render_ctx, text, px_sz, fg, bg, output_buf, width, height, x_offset, y_offset, right_margin, is_single_glyph);
+    bool ok = render_single_line(ctx, text, px_sz, fg, bg, output_buf, width, height, x_offset, y_offset, right_margin, is_single_glyph);
     if (!ok && PyErr_Occurred()) PyErr_Print();
     return ok;
 }
 
 bool
-draw_window_title(OSWindow *window, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
-    if (!ensure_csd_title_render_ctx()) return false;
+draw_window_title(double font_sz_pts, double ydpi, const char *text, color_type fg, color_type bg, uint8_t *output_buf, size_t width, size_t height) {
+    FreeTypeRenderCtx ctx;
+    if (!(ctx = freetype_render_ctx(false))) return false;
     static char buf[2048];
     strip_csi_(text, buf, arraysz(buf));
-    unsigned px_sz = (unsigned)(window->fonts_data->font_sz_in_pts * window->fonts_data->logical_dpi_y / 72.);
+    unsigned px_sz = (unsigned)(font_sz_pts * ydpi / 72.);
     px_sz = MIN(px_sz, 3 * height / 4);
 #define RGB2BGR(x) (x & 0xFF000000) | ((x & 0xFF0000) >> 16) | (x & 0x00FF00) | ((x & 0x0000FF) << 16)
-    bool ok = render_single_line(csd_title_render_ctx, buf, px_sz, RGB2BGR(fg), RGB2BGR(bg), output_buf, width, height, 0, 0, 0, false);
+    bool ok = render_single_line(ctx, buf, px_sz, RGB2BGR(fg), RGB2BGR(bg), output_buf, width, height, 0, 0, 0, false);
 #undef RGB2BGR
     if (!ok && PyErr_Occurred()) PyErr_Print();
     return ok;
@@ -801,8 +787,9 @@ draw_window_title(OSWindow *window, const char *text, color_type fg, color_type 
 
 uint8_t*
 draw_single_ascii_char(const char ch, size_t *result_width, size_t *result_height) {
-    if (!ensure_csd_title_render_ctx()) return NULL;
-    uint8_t *ans = render_single_ascii_char_as_mask(csd_title_render_ctx, ch, result_width, result_height);
+    FreeTypeRenderCtx ctx;
+    if (!(ctx = freetype_render_ctx(true))) return false;
+    uint8_t *ans = render_single_ascii_char_as_mask(ctx, ch, result_width, result_height);
     if (PyErr_Occurred()) PyErr_Print();
     return ans;
 }
@@ -1105,7 +1092,6 @@ change_state_for_os_window(OSWindow *w, int state) {
 }
 
 #ifdef __APPLE__
-static GLFWwindow *apple_preserve_common_context = NULL;
 
 static int
 filter_option(int key UNUSED, int mods, unsigned int native_key UNUSED, unsigned long flags) {
@@ -1126,7 +1112,13 @@ on_application_reopen(int has_visible_windows) {
 
 static bool
 intercept_cocoa_fullscreen(GLFWwindow *w) {
-    if (!OPT(macos_traditional_fullscreen) || !set_callback_window(w)) return false;
+    if (!set_callback_window(w)) return false;
+    if (!OPT(macos_traditional_fullscreen)) {
+        // In non traditional fullscreen macOS forces the window to opaque
+        global_state.callback_os_window->background_opacity.os_forces_opaque = !is_os_window_fullscreen(
+                global_state.callback_os_window);
+        return false;
+    }
     toggle_fullscreen_for_os_window(global_state.callback_os_window);
     global_state.callback_os_window = NULL;
     return true;
@@ -1134,9 +1126,9 @@ intercept_cocoa_fullscreen(GLFWwindow *w) {
 #endif
 
 static void
-init_window_chrome_state(WindowChromeState *s, color_type active_window_bg, bool is_semi_transparent, float background_opacity) {
+init_window_chrome_state(WindowChromeState *s, color_type active_window_bg, float background_opacity) {
     zero_at_ptr(s);
-    const bool should_blur = background_opacity < 1.f && OPT(background_blur) > 0 && is_semi_transparent;
+    const bool should_blur = background_opacity < 1.f && OPT(background_blur) > 0;
 #define SET_TCOL(val) \
         s->use_system_color = false; \
         switch (val & 0xff) { \
@@ -1204,7 +1196,7 @@ set_os_window_chrome(OSWindow *w) {
     }
 
     WindowChromeState new_state;
-    init_window_chrome_state(&new_state, bg, w->is_semi_transparent, w->background_opacity);
+    init_window_chrome_state(&new_state, bg, effective_os_window_alpha(w));
     if (memcmp(&new_state, &w->last_window_chrome, sizeof(WindowChromeState)) != 0) {
         int width, height;
         glfwGetWindowSize(w->handle, &width, &height);
@@ -1381,6 +1373,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         // Also apparently mesa has introduced a bug with sRGB surfaces and Wayland.
         // Sigh. Wayland is such a pile of steaming crap.
         // See https://github.com/kovidgoyal/kitty/issues/7174#issuecomment-2000033873
+        // GL_FRAMEBUFFER_SRGB works anyway without this on Wayland.
         if (!global_state.is_wayland) glfwWindowHint(GLFW_SRGB_CAPABLE, true);
 #ifdef __APPLE__
         cocoa_set_activation_policy(OPT(macos_hide_from_tasks) || lsc != NULL);
@@ -1414,15 +1407,9 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     // creation, which causes a resize event and all the associated processing.
     // The temp window is used to get the DPI. On Wayland no temp window can be
     // used, so start with window visible unless hidden window requested.
-    glfwWindowHint(GLFW_VISIBLE, window_state != WINDOW_HIDDEN && global_state.is_wayland);
     GLFWwindow *common_context = global_state.num_os_windows ? global_state.os_windows[0].handle : NULL;
     GLFWwindow *temp_window = NULL;
-#ifdef __APPLE__
-    if (!apple_preserve_common_context) {
-        apple_preserve_common_context = glfwCreateWindow(640, 480, "kitty", NULL, common_context, NULL);
-    }
-    if (!common_context) common_context = apple_preserve_common_context;
-#endif
+    glfwWindowHint(GLFW_VISIBLE, window_state != WINDOW_HIDDEN && global_state.is_wayland);
     float xscale, yscale;
     double xdpi, ydpi;
     if (global_state.is_wayland) {
@@ -1459,12 +1446,10 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
 #undef glfw_failure
     glfwMakeContextCurrent(glfw_window);
     if (is_first_window) gl_init();
-    // Will make the GPU automatically apply SRGB gamma curve on the resulting framebuffer
-    glEnable(GL_FRAMEBUFFER_SRGB);
     bool is_semi_transparent = glfwGetWindowAttrib(glfw_window, GLFW_TRANSPARENT_FRAMEBUFFER);
     // blank the window once so that there is no initial flash of color
     // changing, in case the background color is not black
-    blank_canvas(is_semi_transparent ? OPT(background_opacity) : 1.0f, OPT(background));
+    blank_canvas(is_semi_transparent ? OPT(background_opacity) : 1.0f, OPT(background), true);
     apply_swap_interval(-1);
     // On Wayland the initial swap is allowed only after the first XDG configure event
     if (glfwAreSwapsAllowed(glfw_window)) glfwSwapBuffers(glfw_window);
@@ -1473,7 +1458,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     if (pret == NULL) return NULL;
     Py_DECREF(pret);
     if (x != INT_MIN && y != INT_MIN) glfwSetWindowPos(glfw_window, x, y);
-    if (!global_state.is_apple && !global_state.is_wayland && window_state != WINDOW_HIDDEN) glfwShowWindow(glfw_window);
+    if (!global_state.is_apple && !global_state.is_wayland && window_state != WINDOW_HIDDEN) glfwShowWindow(glfw_window, false);
     if (global_state.is_wayland || global_state.is_apple) {
         float n_xscale, n_yscale;
         double n_xdpi, n_ydpi;
@@ -1487,15 +1472,14 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         }
     }
     if (is_first_window) {
-        PyObject *ret = PyObject_CallFunction(load_programs, "O", is_semi_transparent ? Py_True : Py_False);
+        PyObject *ret = PyObject_CallNoArgs(load_programs);
         if (ret == NULL) return NULL;
         Py_DECREF(ret);
         get_platform_dependent_config_values(glfw_window);
-        GLint encoding;
-        glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_BACK_LEFT, GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
-        if (encoding != GL_SRGB) log_error("The output buffer does not support sRGB color encoding, colors will be incorrect.");
+        if (!global_state.supports_framebuffer_srgb) {
+            log_error("The OpenGL drivers dont support GL_FRAMEBUFFER_SRGB this will cause a small rendering performance penalty");
+        }
         is_first_window = false;
-
     }
     OSWindow *w = add_os_window();
     w->handle = glfw_window;
@@ -1548,15 +1532,15 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     w->last_mouse_activity_at = now;
     w->mouse_activate_deadline = -1;
     w->mouse_show_threshold = 0;
-    w->is_semi_transparent = is_semi_transparent;
-    if (want_semi_transparent && !w->is_semi_transparent) {
+    w->background_opacity.supports_transparency = is_semi_transparent;
+    if (want_semi_transparent && !w->background_opacity.supports_transparency) {
         static bool warned = false;
         if (!warned) {
             log_error("Failed to enable transparency. This happens when your desktop environment does not support compositing.");
             warned = true;
         }
     }
-    init_window_chrome_state(&w->last_window_chrome, OPT(background), w->is_semi_transparent, w->background_opacity);
+    init_window_chrome_state(&w->last_window_chrome, OPT(background), effective_os_window_alpha(w));
     if (w->is_layer_shell) {
         if (global_state.is_apple) set_layer_shell_config_for(w, lsc);
     } else apply_window_chrome_state(
@@ -1567,7 +1551,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     if (window_state != WINDOW_NORMAL) change_state_for_os_window(w, window_state);
 #ifdef __APPLE__
     // macOS: Show the window after it is ready
-    if (window_state != WINDOW_HIDDEN) glfwShowWindow(glfw_window);
+    if (window_state != WINDOW_HIDDEN) glfwShowWindow(glfw_window, false);
 #endif
     w->redraw_count = 1;
     debug("OS Window created\n");
@@ -1704,11 +1688,6 @@ dbus_user_notification_activated(uint32_t notification_id, int type, const char*
     send_dbus_notification_event_to_python(stype, nid, action);
 }
 #endif
-
-static PyObject*
-opengl_version_string(PyObject *self UNUSED, PyObject *args UNUSED) {
-    return PyUnicode_FromString(global_state.gl_version ? gl_version_string() : "");
-}
 
 static PyObject*
 glfw_init(PyObject UNUSED *self, PyObject *args) {
@@ -2474,10 +2453,6 @@ run_main_loop(tick_callback_fun cb, void* cb_data) {
 
 void
 stop_main_loop(void) {
-#ifdef __APPLE__
-    if (apple_preserve_common_context) glfwDestroyWindow(apple_preserve_common_context);
-    apple_preserve_common_context = NULL;
-#endif
     glfwStopMainLoop();
 }
 
@@ -2575,34 +2550,30 @@ is_layer_shell_supported(PyObject *self UNUSED, PyObject *args UNUSED) {
 }
 
 static PyObject*
-toggle_os_window_visibility(PyObject *self UNUSED, PyObject *args) {
+toggle_os_window_visibility(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     unsigned long long wid;
-    int set_visible = -1;
-    if (!PyArg_ParseTuple(args, "K|p", &wid, &set_visible)) return NULL;
+    int set_visible = -1, move_to_active_screen = 0;
+    static const char* kwlist[] = {"os_window_id", "visible", "move_to_active_screen", NULL};
+    if (!PyArg_ParseTupleAndKeywords(
+        args, kw, "K|pp", (char**)kwlist, &wid, &set_visible, &move_to_active_screen)) return NULL;
     OSWindow *w = os_window_for_id(wid);
     if (!w || !w->handle) Py_RETURN_FALSE;
     bool is_visible = glfwGetWindowAttrib(w->handle, GLFW_VISIBLE) != 0;
     if (set_visible == -1) set_visible = !is_visible;
     else if (set_visible == is_visible) Py_RETURN_FALSE;
-    set_os_window_visibility(w, set_visible);
+    set_os_window_visibility(w, set_visible, move_to_active_screen);
     Py_RETURN_TRUE;
 }
 
 static PyObject*
 layer_shell_config_for_os_window(PyObject *self UNUSED, PyObject *wid) {
     if (!PyLong_Check(wid)) { PyErr_SetString(PyExc_TypeError, "os_window_id must be a int"); return NULL; }
-#ifdef __APPLE__
-    (void)layer_shell_config_to_python;
-    Py_RETURN_NONE;
-#else
-    if (!global_state.is_wayland) Py_RETURN_NONE;
     id_type id = PyLong_AsUnsignedLongLong(wid);
     OSWindow *w = os_window_for_id(id);
     if (!w || !w->handle) Py_RETURN_NONE;
     const GLFWLayerShellConfig *c = glfwGetLayerShellConfig(w->handle);
     if (!c) Py_RETURN_NONE;
     return layer_shell_config_to_python(c);
-#endif
 }
 
 static PyObject*
@@ -2626,7 +2597,7 @@ grab_keyboard(PyObject *self UNUSED, PyObject *action) {
 static PyMethodDef module_methods[] = {
     METHODB(set_custom_cursor, METH_VARARGS),
     METHODB(is_css_pointer_name_valid, METH_O),
-    METHODB(toggle_os_window_visibility, METH_VARARGS),
+    {"toggle_os_window_visibility", (PyCFunction)(void (*) (void))(toggle_os_window_visibility), METH_VARARGS | METH_KEYWORDS, NULL},
     METHODB(layer_shell_config_for_os_window, METH_O),
     METHODB(set_layer_shell_config, METH_VARARGS),
     METHODB(grab_keyboard, METH_O),
@@ -2662,7 +2633,6 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_hide_other_apps, METH_NOARGS),
     METHODB(cocoa_minimize_os_window, METH_VARARGS),
     {"glfw_init", (PyCFunction)glfw_init, METH_VARARGS, ""},
-    METHODB(opengl_version_string, METH_NOARGS),
     {"glfw_terminate", (PyCFunction)glfw_terminate, METH_NOARGS, ""},
     {"glfw_get_physical_dpi", (PyCFunction)glfw_get_physical_dpi, METH_NOARGS, ""},
     {"glfw_get_key_name", (PyCFunction)glfw_get_key_name, METH_VARARGS, ""},
@@ -2680,7 +2650,8 @@ void cleanup_glfw(void) {
     Py_CLEAR(edge_spacing_func);
 #ifndef __APPLE__
     Py_CLEAR(dbus_notification_callback);
-    release_freetype_render_context(csd_title_render_ctx);
+    release_freetype_render_context(bold_render_ctx);
+    release_freetype_render_context(normal_render_ctx);
 #endif
 }
 

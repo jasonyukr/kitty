@@ -27,6 +27,7 @@ choices_for_macos_colorspace = typing.Literal['srgb', 'default', 'displayp3']
 choices_for_macos_show_window_title_in = typing.Literal['all', 'menubar', 'none', 'window']
 choices_for_placement_strategy = typing.Literal['top-left', 'top', 'top-right', 'left', 'center', 'right', 'bottom-left', 'bottom', 'bottom-right']
 choices_for_pointer_shape_when_grabbed = choices_for_default_pointer_shape
+choices_for_scrollbar = typing.Literal['scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered']
 choices_for_strip_trailing_spaces = typing.Literal['always', 'never', 'smart']
 choices_for_tab_bar_align = typing.Literal['left', 'center', 'right']
 choices_for_tab_bar_style = typing.Literal['fade', 'hidden', 'powerline', 'separator', 'slant', 'custom']
@@ -336,6 +337,7 @@ option_names = (
     'cursor_stop_blinking_after',
     'cursor_text_color',
     'cursor_trail',
+    'cursor_trail_color',
     'cursor_trail_decay',
     'cursor_trail_start_threshold',
     'cursor_underline_thickness',
@@ -410,10 +412,23 @@ option_names = (
     'resize_debounce_time',
     'resize_in_steps',
     'scrollback_fill_enlarged_window',
-    'scrollback_indicator_opacity',
     'scrollback_lines',
     'scrollback_pager',
     'scrollback_pager_history_size',
+    'scrollbar',
+    'scrollbar_gap',
+    'scrollbar_handle_color',
+    'scrollbar_handle_opacity',
+    'scrollbar_hitbox_expansion',
+    'scrollbar_hover_width',
+    'scrollbar_interactive',
+    'scrollbar_jump_on_click',
+    'scrollbar_min_handle_height',
+    'scrollbar_radius',
+    'scrollbar_track_color',
+    'scrollbar_track_hover_opacity',
+    'scrollbar_track_opacity',
+    'scrollbar_width',
     'select_by_word_characters',
     'select_by_word_characters_forward',
     'selection_background',
@@ -431,6 +446,7 @@ option_names = (
     'tab_bar_align',
     'tab_bar_background',
     'tab_bar_edge',
+    'tab_bar_filter',
     'tab_bar_margin_color',
     'tab_bar_margin_height',
     'tab_bar_margin_width',
@@ -519,6 +535,7 @@ class Options:
     cursor_stop_blinking_after: float = 15.0
     cursor_text_color: kitty.fast_data_types.Color | None = Color(17, 17, 17)
     cursor_trail: int = 0
+    cursor_trail_color: kitty.fast_data_types.Color | None = None
     cursor_trail_decay: tuple[float, float] = (0.1, 0.4)
     cursor_trail_start_threshold: int = 2
     cursor_underline_thickness: float = 2.0
@@ -582,10 +599,23 @@ class Options:
     resize_debounce_time: tuple[float, float] = (0.1, 0.5)
     resize_in_steps: bool = False
     scrollback_fill_enlarged_window: bool = False
-    scrollback_indicator_opacity: float = 1.0
     scrollback_lines: int = 2000
     scrollback_pager: list[str] = ['less', '--chop-long-lines', '--RAW-CONTROL-CHARS', '+INPUT_LINE_NUMBER']
     scrollback_pager_history_size: int = 0
+    scrollbar: choices_for_scrollbar = 'scrolled'
+    scrollbar_gap: float = 0.1
+    scrollbar_handle_color: int = 0
+    scrollbar_handle_opacity: float = 0.5
+    scrollbar_hitbox_expansion: float = 0.25
+    scrollbar_hover_width: float = 1.0
+    scrollbar_interactive: bool = True
+    scrollbar_jump_on_click: bool = True
+    scrollbar_min_handle_height: float = 1.0
+    scrollbar_radius: float = 0.3
+    scrollbar_track_color: int = 0
+    scrollbar_track_hover_opacity: float = 0.1
+    scrollbar_track_opacity: float = 0
+    scrollbar_width: float = 0.5
     select_by_word_characters: str = '@-./_~?&=%+#'
     select_by_word_characters_forward: str = ''
     selection_background: kitty.fast_data_types.Color | None = Color(255, 250, 205)
@@ -602,6 +632,7 @@ class Options:
     tab_bar_align: choices_for_tab_bar_align = 'left'
     tab_bar_background: kitty.fast_data_types.Color | None = None
     tab_bar_edge: int = 8
+    tab_bar_filter: str = ''
     tab_bar_margin_color: kitty.fast_data_types.Color | None = None
     tab_bar_margin_height: TabBarMarginHeight = TabBarMarginHeight(outer=0, inner=0)
     tab_bar_margin_width: float = 0
@@ -935,7 +966,7 @@ defaults.map = [
 ]
 
 if is_macos:
-    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=99), definition='copy_to_clipboard'))
+    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=99), definition='copy_or_noop'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=118), definition='paste_from_clipboard'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=57354), definition='scroll_line_up'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=57352), definition='scroll_line_up'))
@@ -977,6 +1008,7 @@ if is_macos:
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=114), definition='clear_terminal reset active'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=107), definition='clear_terminal to_cursor active'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=107), definition='clear_terminal scrollback active'))
+    defaults.map.append(KeyDefinition(trigger=SingleKey(mods=8, key=108), definition='clear_terminal last_command active'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=12, key=108), definition='clear_terminal to_cursor_scroll active'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=12, key=44), definition='load_config_file'))
     defaults.map.append(KeyDefinition(trigger=SingleKey(mods=10, key=44), definition='debug_config'))
@@ -1051,6 +1083,7 @@ defaults.mouse_map = [
 nullable_colors = frozenset({
     'cursor',
     'cursor_text_color',
+    'cursor_trail_color',
     'visual_bell_color',
     'active_border_color',
     'tab_bar_background',

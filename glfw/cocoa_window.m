@@ -35,6 +35,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <float.h>
 #include <string.h>
+#include <assert.h>
 
 #define debug debug_rendering
 
@@ -520,6 +521,7 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 @interface GLFWWindowDelegate : NSObject
 {
     _GLFWwindow* window;
+    NSArray<NSDictionary *> *_lastScreenStates;
 }
 
 - (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow;
@@ -532,10 +534,24 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 - (instancetype)initWithGlfwWindow:(_GLFWwindow *)initWindow
 {
     self = [super init];
-    if (self != nil)
+    if (self != nil) {
         window = initWindow;
-
+        _lastScreenStates = [self captureScreenStates];
+    }
     return self;
+}
+
+- (NSArray<NSDictionary *> *)captureScreenStates {
+    NSMutableArray *states = [NSMutableArray array];
+    for (NSScreen *screen in [NSScreen screens]) {
+        // Use the screen's deviceDescription, which contains a stable ID.
+        [states addObject:screen.deviceDescription];
+    }
+    return [states copy];
+}
+
+- (void)cleanup {
+    [_lastScreenStates release]; _lastScreenStates = nil;
 }
 
 - (BOOL)windowShouldClose:(id)sender
@@ -548,6 +564,16 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 - (void)windowDidResize:(NSNotification *)notification
 {
     (void)notification;
+    NSArray<NSDictionary *> *currentScreenStates = [self captureScreenStates];
+    const bool is_screen_change = ![_lastScreenStates isEqualToArray:currentScreenStates];
+    debug_rendering("windowDidResize() called, is_screen_change: %d\n", is_screen_change);
+    if (is_screen_change) {
+        // This resize likely happened because a screen was added, removed, or changed resolution.
+        [_lastScreenStates release];
+        _lastScreenStates = [currentScreenStates retain];
+    }
+    [currentScreenStates release];
+
     if (window->context.client != GLFW_NO_API)
         [window->context.nsgl.object update];
 
@@ -579,7 +605,10 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         window->ns.height = (int)contentRect.size.height;
         _glfwInputWindowSize(window, (int)contentRect.size.width, (int)contentRect.size.height);
     }
-    if (window->ns.resizeCallback) window->ns.resizeCallback((GLFWwindow*)window);
+    // Because of a bug in macOS Tahoe we cannot redraw the window in response
+    // to a resize event that was caused by a screen change as the OpenGL
+    // context is not ready yet. See: https://github.com/kovidgoyal/kitty/issues/8983
+    if (window->ns.resizeCallback && !is_screen_change) window->ns.resizeCallback((GLFWwindow*)window);
 }
 
 - (void)windowDidMove:(NSNotification *)notification
@@ -1621,12 +1650,6 @@ void _glfwPlatformUpdateIMEState(_GLFWwindow *w, const GLFWIMEUpdateEvent *ev) {
 
 @implementation GLFWWindow
 
-static void
-handle_screen_size_change(_GLFWwindow *window, NSNotification *notification UNUSED) {
-    if (!window || !window->ns.layer_shell.is_active) return;
-    _glfwPlatformSetLayerShellConfig(window, NULL);
-}
-
 - (instancetype)initWithGlfwWindow:(NSRect)contentRect
                          styleMask:(NSWindowStyleMask)style
                            backing:(NSBackingStoreType)backingStoreType
@@ -1637,14 +1660,14 @@ handle_screen_size_change(_GLFWwindow *window, NSNotification *notification UNUS
         glfw_window = initWindow;
         self.tabbingMode = NSWindowTabbingModeDisallowed;
         NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-        [center addObserverForName:NSApplicationDidChangeScreenParametersNotification
-                        object:nil
-                        queue:[NSOperationQueue mainQueue]
-                        usingBlock:^(NSNotification * _Nonnull notification) {
-                        handle_screen_size_change(glfw_window, notification);
-                    }];
+        [center addObserver:self selector:@selector(screenParametersDidChange:) name:NSApplicationDidChangeScreenParametersNotification object:nil];
     }
     return self;
+}
+
+- (void)screenParametersDidChange:(NSNotification *)notification {
+    if (!glfw_window || !glfw_window->ns.layer_shell.is_active) return;
+    _glfwPlatformSetLayerShellConfig(glfw_window, NULL);
 }
 
 - (void) removeGLFWWindow
@@ -1666,7 +1689,8 @@ handle_screen_size_change(_GLFWwindow *window, NSNotification *notification UNUS
 
 - (BOOL)canBecomeKeyWindow
 {
-    if (glfw_window && glfw_window->ns.layer_shell.is_active) {
+    if (!glfw_window) return NO;
+    if (glfw_window->ns.layer_shell.is_active) {
         if (glfw_window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND) return NO;
         switch(glfw_window->ns.layer_shell.config.focus_policy) {
             case GLFW_FOCUS_NOT_ALLOWED: return NO;
@@ -1675,7 +1699,8 @@ handle_screen_size_change(_GLFWwindow *window, NSNotification *notification UNUS
         }
     }
     // Required for NSWindowStyleMaskBorderless windows
-    return YES;
+    // Also miniaturized windows should not become key
+    return !_glfwPlatformWindowIconified(glfw_window);
 }
 
 - (BOOL)canBecomeMainWindow
@@ -1916,6 +1941,7 @@ void _glfwPlatformDestroyWindow(_GLFWwindow* window)
         window->context.destroy(window);
 
     [window->ns.object setDelegate:nil];
+    [window->ns.delegate cleanup];
     [window->ns.delegate release];
     window->ns.delegate = nil;
 
@@ -1938,6 +1964,40 @@ screen_for_window_center(_GLFWwindow *window) {
         }
     }
     return NSScreen.mainScreen;
+}
+
+static NSScreen*
+active_screen(void) {
+    NSPoint mouseLocation = [NSEvent mouseLocation];
+    NSArray<NSScreen *> *screens = [NSScreen screens];
+    for (NSScreen *screen in screens) {
+        if (NSPointInRect(mouseLocation, [screen frame])) {
+            return screen;
+        }
+    }
+    // As a fallback, return the main screen
+    return [NSScreen mainScreen];
+}
+
+static bool
+is_same_screen(NSScreen *screenA, NSScreen * screenB) {
+    if (screenA == screenB) return true;
+    NSDictionary<NSDeviceDescriptionKey, id> *deviceDescriptionA = [screenA deviceDescription];
+    NSDictionary<NSDeviceDescriptionKey, id> *deviceDescriptionB = [screenB deviceDescription];
+    NSNumber *screenNumberA = deviceDescriptionA[@"NSScreenNumber"];
+    NSNumber *screenNumberB = deviceDescriptionB[@"NSScreenNumber"];
+    return [screenNumberA isEqualToNumber:screenNumberB];
+}
+
+static void
+move_window_to_screen(_GLFWwindow *window, NSScreen *target) {
+    NSRect screenFrame = [target visibleFrame];
+    NSRect windowFrame = [window->ns.object frame];
+    CGFloat newX = NSMidX(screenFrame) - (windowFrame.size.width / 2.0);
+    CGFloat newY = NSMidY(screenFrame) - (windowFrame.size.height / 2.0);
+    NSRect newWindowFrame = NSMakeRect(newX, newY, windowFrame.size.width, windowFrame.size.height);
+    [window->ns.object setFrame:newWindowFrame display:NO animate:NO];
+    if (window->ns.layer_shell.is_active) _glfwPlatformSetLayerShellConfig(window, NULL);
 }
 
 const GLFWLayerShellConfig*
@@ -2226,22 +2286,42 @@ void _glfwPlatformMaximizeWindow(_GLFWwindow* window)
     }
 }
 
-void _glfwPlatformShowWindow(_GLFWwindow* window)
+void _glfwPlatformShowWindow(_GLFWwindow* window, bool move_to_active_screen)
 {
-    NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
-    window->ns.previous_front_most_application = 0;
-    if (app && app.processIdentifier != getpid()) window->ns.previous_front_most_application = app.processIdentifier;
-    if (window->ns.layer_shell.is_active && window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND) {
-        [window->ns.object orderBack:nil];
-    } else [window->ns.object orderFront:nil];
-    debug("Previously active application pid: %d bundle identifier: %s\n",
-        window->ns.previous_front_most_application, app ? app.bundleIdentifier.UTF8String : "");
+    const bool is_background = window->ns.layer_shell.is_active && window->ns.layer_shell.config.type == GLFW_LAYER_SHELL_BACKGROUND;
+    NSWindow *nw = window->ns.object;
+    if (move_to_active_screen) {
+        NSScreen *current_screen = screen_for_window_center(window);
+        NSScreen *target_screen = active_screen();
+        if (!is_same_screen(current_screen, target_screen)) {
+            debug_rendering("Moving OS window %llu to active screen\n", window->id);
+            move_window_to_screen(window, target_screen);
+        }
+    }
+    if (is_background) {
+        [nw orderBack:nil];
+    } else {
+        // Cocoa has a bug where when showing a hidden window after
+        // fullscreening an application, the window does not get added
+        // to the current space even though it has NSWindowCollectionBehaviorCanJoinAllSpaces
+        // probably because it wasnt added to the temp space used for
+        // fullscreen. So to work around that, we change the collection
+        // behavior temporarily to NSWindowCollectionBehaviorMoveToActiveSpace
+        // and then change it back asynchronously.
+        // See https://github.com/kovidgoyal/kitty/issues/8740
+        NSWindowCollectionBehavior old = nw.collectionBehavior;
+        nw.collectionBehavior = (old & !NSWindowCollectionBehaviorCanJoinAllSpaces) | NSWindowCollectionBehaviorMoveToActiveSpace;
+        [nw orderFront:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+			nw.collectionBehavior = old;
+		});
+    }
 }
 
 void _glfwPlatformHideWindow(_GLFWwindow* window)
 {
     [window->ns.object orderOut:nil];
-    pid_t prev_app_pid = window->ns.previous_front_most_application; window->ns.previous_front_most_application = 0;
+    pid_t prev_app_pid = _glfw.ns.previous_front_most_application; _glfw.ns.previous_front_most_application = 0;
     NSRunningApplication *app;
     if (window->ns.layer_shell.is_active && prev_app_pid > 0 && (app = [NSRunningApplication runningApplicationWithProcessIdentifier:prev_app_pid])) {
         unsigned num_visible = 0;
@@ -2276,8 +2356,13 @@ int _glfwPlatformWindowBell(_GLFWwindow* window UNUSED)
 
 void _glfwPlatformFocusWindow(_GLFWwindow* window)
 {
-    // Make us the active application
+    if (_glfwPlatformWindowIconified(window)) {
+        // miniaturized windows return false in canBecomeKeyWindow therefore
+        // unminiaturize first
+        [window->ns.object deminiaturize:nil];
+    }
     if ([window->ns.object canBecomeKeyWindow]) {
+        // Make us the active application
         [NSApp activateIgnoringOtherApps:YES];
         [window->ns.object makeKeyAndOrderFront:nil];
     }
@@ -3132,6 +3217,8 @@ _glfwPlatformSetWindowBlur(_GLFWwindow *window, int radius) {
 GLFWAPI id glfwGetCocoaWindow(GLFWwindow* handle)
 {
     _GLFWwindow* window = (_GLFWwindow*) handle;
+    assert(window != NULL);
+
     _GLFW_REQUIRE_INIT_OR_RETURN(nil);
     return window->ns.object;
 }
@@ -3170,6 +3257,62 @@ GLFWAPI GLFWcocoarenderframefun glfwCocoaSetWindowResizeCallback(GLFWwindow *w, 
     return current;
 }
 
+@implementation NSView (FindByIdentifier)
+
+- (NSArray<NSView *> *)viewsWithIdentifier:(NSUserInterfaceItemIdentifier)identifier {
+    NSMutableArray<NSView *> *result = [NSMutableArray array];
+    if ([self.identifier isEqual:identifier]) {
+        [result addObject:self];
+    }
+    for (NSView *sub in self.subviews) {
+        [result addObjectsFromArray:[sub viewsWithIdentifier:identifier]];
+    }
+    return result;
+}
+
+@end
+
+static CGFloat
+title_bar_and_tool_bar_height(NSWindow *window) {
+    NSRect frame = window.frame;
+    NSRect content = [window contentRectForFrameRect:frame];
+    return NSHeight(frame) - NSHeight(content);
+}
+
+static
+void clear_title_bar_background_views(NSWindow *window) {
+#define tag @"kitty-for-transparent-titlebar"
+    NSView *contentView = window.contentView, *titlebarContainer = contentView ? contentView.superview : nil;
+    if (titlebarContainer) {
+        for (NSView *subview in [titlebarContainer viewsWithIdentifier:tag]) [subview removeFromSuperview];
+    }
+}
+
+static void
+set_title_bar_background(NSWindow *window, NSColor *backgroundColor) {
+    NSView *contentView = window.contentView, *titlebarContainer = contentView ? contentView.superview : nil;
+    if (!titlebarContainer) return;
+    for (NSView *subview in [titlebarContainer viewsWithIdentifier:tag]) [subview removeFromSuperview];
+    if (!backgroundColor) return;
+
+    const CGFloat height = title_bar_and_tool_bar_height(window);
+    NSView *bgView = [[NSView alloc] initWithFrame:NSMakeRect(
+        0, titlebarContainer.bounds.size.height - height, titlebarContainer.bounds.size.width, height)];
+    bgView.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+    bgView.wantsLayer = YES;
+    bgView.layer.backgroundColor = backgroundColor.CGColor;
+    bgView.identifier = tag;
+
+    NSView *containerView = [[NSView alloc] initWithFrame:window.contentView.bounds];
+    containerView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    containerView.identifier = tag;
+    [containerView addSubview:bgView];
+    [bgView release];
+    [window.contentView addSubview:containerView];
+    [containerView release];
+#undef tag
+}
+
 GLFWAPI void glfwCocoaSetWindowChrome(GLFWwindow *w, unsigned int color, bool use_system_color, unsigned int system_color, int background_blur, unsigned int hide_window_decorations, bool show_text_in_titlebar, int color_space, float background_opacity, bool resizable) { @autoreleasepool {
     _GLFWwindow* window = (_GLFWwindow*)w;
     if (window->ns.layer_shell.is_active) return;
@@ -3182,7 +3325,7 @@ GLFWAPI void glfwCocoaSetWindowChrome(GLFWwindow *w, unsigned int color, bool us
     const bool in_fullscreen = ((current_style_mask & NSWindowStyleMaskFullScreen) != 0) || window->ns.in_traditional_fullscreen;
     NSAppearance *light_appearance = is_transparent ? [NSAppearance appearanceNamed:NSAppearanceNameVibrantLight] : [NSAppearance appearanceNamed:NSAppearanceNameAqua];
     NSAppearance *dark_appearance = is_transparent ? [NSAppearance appearanceNamed:NSAppearanceNameVibrantDark] : [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
-    if (use_system_color || background_opacity < 1.0) {
+    if (use_system_color) {
         if (is_transparent) {
             // prevent blurring of shadows at window corners with desktop background by setting a low alpha background
             background = background_blur > 0 ? [NSColor colorWithWhite: 0 alpha: 0.001f] : [NSColor clearColor];
@@ -3199,7 +3342,8 @@ GLFWAPI void glfwCocoaSetWindowChrome(GLFWwindow *w, unsigned int color, bool us
         double green = ((color >> 8) & 0xFF) / 255.0;
         double blue = (color & 0xFF) / 255.0;
         double luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-        background = [NSColor colorWithSRGBRed:red green:green blue:blue alpha:1.f];
+        CGFloat alpha = background_opacity < 1.0 ? background_opacity : 1.0;
+        background = [NSColor colorWithSRGBRed:red green:green blue:blue alpha:alpha];
         appearance = luma < 0.5 ? dark_appearance : light_appearance;
         titlebar_transparent = true;
     }
@@ -3261,6 +3405,9 @@ GLFWAPI void glfwCocoaSetWindowChrome(GLFWwindow *w, unsigned int color, bool us
     [[window->ns.object standardWindowButton: NSWindowCloseButton] setHidden:hide_titlebar_buttons];
     [[window->ns.object standardWindowButton: NSWindowMiniaturizeButton] setHidden:hide_titlebar_buttons];
     [[window->ns.object standardWindowButton: NSWindowZoomButton] setHidden:hide_titlebar_buttons];
+    if (background_opacity < 1.0 && !window->ns.titlebar_hidden && window->decorated) {
+        set_title_bar_background(window->ns.object, [background colorUsingColorSpace:(cs ? cs : [NSColorSpace deviceRGBColorSpace])]);
+    } else clear_title_bar_background_views(window->ns.object);
     // Apple throws a hissy fit if one attempts to clear the value of NSWindowStyleMaskFullScreen outside of a full screen transition
     // event. See https://github.com/kovidgoyal/kitty/issues/7106
     NSWindowStyleMask fsmask = current_style_mask & NSWindowStyleMaskFullScreen;

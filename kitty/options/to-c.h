@@ -58,6 +58,19 @@ window_title_in(PyObject *title_in) {
     return ALL;
 }
 
+static inline ScrollbarVisibilityPolicy
+scrollbar(PyObject *src) {
+    const char *q = PyUnicode_AsUTF8(src);
+    switch (q[0]) {
+        case 'a': return SCROLLBAR_ALWAYS;
+        case 'n': return SCROLLBAR_NEVER;
+        case 'h': return SCROLLBAR_ON_HOVERED;
+        case 's':
+            return strcmp(q, "scrolled") == 0 ? SCROLLBAR_ON_SCROLLED : SCROLLBAR_ON_SCROLL_AND_HOVER;
+    }
+    return SCROLLBAR_ON_SCROLLED;
+}
+
 static inline unsigned
 undercurl_style(PyObject *x) {
     RAII_PyObject(thick, PyUnicode_FromString("thick"));
@@ -213,6 +226,11 @@ static inline void
 cursor_trail_decay(PyObject *src, Options *opts) {
     opts->cursor_trail_decay_fast = PyFloat_AsFloat(PyTuple_GET_ITEM(src, 0));
     opts->cursor_trail_decay_slow = PyFloat_AsFloat(PyTuple_GET_ITEM(src, 1));
+}
+
+static inline void
+cursor_trail_color(PyObject *src, Options *opts) {
+    opts->cursor_trail_color = color_or_none_as_int(src);
 }
 
 static void

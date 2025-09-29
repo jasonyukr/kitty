@@ -8,7 +8,7 @@ import re
 import sys
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Iterator, TypedDict
+from typing import Any, Iterator, Sequence, TypedDict
 
 try:
     from kitty.constants import appname, is_macos
@@ -118,7 +118,7 @@ class OptionDict(TypedDict):
     completion: CompletionSpec
 
 
-OptionSpecSeq = list[str | OptionDict]
+OptionSpecSeq = Sequence[str | OptionDict]
 
 
 def parse_option_spec(spec: str | None = None) -> tuple[OptionSpecSeq, OptionSpecSeq]:
@@ -129,8 +129,8 @@ def parse_option_spec(spec: str | None = None) -> tuple[OptionSpecSeq, OptionSpe
     lines = spec.splitlines()
     prev_line = ''
     prev_indent = 0
-    seq: OptionSpecSeq = []
-    disabled: OptionSpecSeq = []
+    seq: list[str | OptionDict] = []
+    disabled: list[str | OptionDict] = []
     mpat = re.compile('([a-z]+)=(.+)')
     current_cmd: OptionDict = {
         'dest': '', 'aliases': (), 'help': '', 'choices': (),
@@ -661,7 +661,9 @@ The panel can only be displayed on a single monitor (output) at a time. This all
 you to specify which output is used, by name. If not specified the compositor will choose an
 output automatically, typically the last output the user interacted with or the primary monitor.
 Use the special value :code:`list` to get a list of available outputs. Use :code:`listjson` for
-a json encoded output.
+a json encoded output. Note that on Wayland the output can only be set at panel creation time,
+it cannot be changed after creation, nor is there anyway to display a single panel on all outputs.
+Please complain to the Wayland developers about this.
 
 
 --class --app-id
@@ -743,6 +745,14 @@ type=bool-set
 default={toggle_visibility}
 When set and using :option:`--single-instance` will toggle the visibility of the
 existing panel rather than creating a new one.
+
+
+--move-to-active-monitor
+type=bool-set
+default=false
+When set and using :option:`--toggle-visibility` to show an existing panel, the panel
+is moved to the active monitor (typically the monitor with the mouse on it).
+This works only if the underlying OS supports it. It is currently supported on macOS only.
 
 
 --start-as-hidden

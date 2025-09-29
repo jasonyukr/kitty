@@ -4,12 +4,12 @@
 from collections.abc import Generator, Iterable, Iterator, Sequence
 from functools import partial
 from itertools import repeat
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 from kitty.borders import BorderColor
 from kitty.fast_data_types import Region, set_active_window, viewport_for_window
 from kitty.options.types import Options
-from kitty.types import Edges, WindowGeometry
+from kitty.types import Edges, WindowGeometry, WindowMapper
 from kitty.typing_compat import TypedDict, WindowType
 from kitty.window_list import WindowGroup, WindowList
 
@@ -215,6 +215,14 @@ def distribute_indexed_bias(base_bias: Sequence[float], index_bias_map: dict[int
     return normalize_biases(ans)
 
 
+def create_window_id_map_for_unserialize(all_windows: WindowList) -> dict[int, int]:
+    window_id_map = {}
+    for w in all_windows:
+        if w.serialized_id:
+            window_id_map[w.serialized_id] = w.id
+    return window_id_map
+
+
 class Layout:
 
     name: str = ''
@@ -367,7 +375,7 @@ class Layout:
         ),)
         geom = layout_single_window(xdecoration_pairs, ydecoration_pairs, xalignment=lgd.alignment_x, yalignment=lgd.alignment_y)
         wg.set_geometry(geom)
-        if add_blank_rects and wg:
+        if add_blank_rects:
             self.blank_rects.extend(blank_rects_for_window(geom))
 
     def xlayout(
@@ -436,3 +444,25 @@ class Layout:
 
     def layout_state(self) -> dict[str, Any]:
         return {}
+
+    def set_layout_state(self, layout_state: dict[str, Any], map_group_id: WindowMapper) -> bool:
+        return True
+
+    def serialize(self, all_windows: WindowList) -> dict[str, Any]:
+        ans = self.layout_state()
+        ans['opts'] = self.layout_opts.serialized()
+        ans['class'] = self.__class__.__name__
+        ans['all_windows'] = all_windows.serialize_layout_state()
+        return ans
+
+    def unserialize(
+        self, s: dict[str, Any], all_windows: WindowList,
+        window_id_mapper: Callable[[WindowList], dict[int, int]] = create_window_id_map_for_unserialize,
+    ) -> bool:
+        if s.get('class') != self.__class__.__name__:
+            return False
+        window_id_map = create_window_id_map_for_unserialize(all_windows)
+        m = all_windows.unserialize_layout_state(s['all_windows'], window_id_map)
+        if m is None:
+            return False
+        return self.set_layout_state(s, m.get)

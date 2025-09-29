@@ -4,6 +4,7 @@
 
 import glob
 import io
+import json
 import os
 import shlex
 import shutil
@@ -11,12 +12,13 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.request import urlopen
+from urllib.request import Request
 
 BUNDLE_URL = 'https://download.calibre-ebook.com/ci/kitty/{}-64.tar.xz'
 FONTS_URL = 'https://download.calibre-ebook.com/ci/fonts.tar.xz'
 NERD_URL = 'https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz'
 is_bundle = os.environ.get('KITTY_BUNDLE') == '1'
+is_codeql = os.environ.get('KITTY_CODEQL') == '1'
 is_macos = 'darwin' in sys.platform.lower()
 SW = ''
 
@@ -61,9 +63,24 @@ def run(*a: str, print_crash_reports: bool = False) -> None:
         raise SystemExit(f'The following process failed with exit code: {ret}:\n{cmd}')
 
 
+def download_with_retry(url: str | Request, count: int = 5) -> bytes:
+    from urllib.request import urlopen
+    for i in range(count):
+        try:
+            print('Downloading', url, flush=True)
+            with urlopen(url) as f:
+                ans: bytes = f.read()
+            return ans
+        except Exception as err:
+            if i >= count - 1:
+                raise
+            print(f'Download failed with error {err} retrying...', file=sys.stderr)
+            time.sleep(1)
+    return b''
+
+
 def install_fonts() -> None:
-    with urlopen(FONTS_URL) as f:
-        data = f.read()
+    data = download_with_retry(FONTS_URL)
     fonts_dir = os.path.expanduser('~/Library/Fonts' if is_macos else '~/.local/share/fonts')
     os.makedirs(fonts_dir, exist_ok=True)
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as tf:
@@ -71,8 +88,7 @@ def install_fonts() -> None:
             tf.extractall(fonts_dir, filter='fully_trusted')
         except TypeError:
             tf.extractall(fonts_dir)
-    with urlopen(NERD_URL) as f:
-        data = f.read()
+    data = download_with_retry(NERD_URL)
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as tf:
         try:
             tf.extractall(fonts_dir, filter='fully_trusted')
@@ -84,13 +100,14 @@ def install_deps() -> None:
     print('Installing kitty dependencies...')
     sys.stdout.flush()
     if is_macos:
-        items = [x.split()[1].strip('"') for x in open('Brewfile').readlines() if x.strip().startswith('brew ')]
-        openssl = 'openssl'
-        items.remove('go')  # already installed by ci.yml
-        import ssl
-        if ssl.OPENSSL_VERSION_INFO[0] == 1:
-            openssl += '@1.1'
-        run('brew', 'install', 'fish', openssl, *items)
+        if not is_codeql:  # for some reason brew fails on CodeQL we dont need it anyway
+            items = [x.split()[1].strip('"') for x in open('Brewfile').readlines() if x.strip().startswith('brew ')]
+            openssl = 'openssl'
+            items.remove('go')  # already installed by ci.yml
+            import ssl
+            if ssl.OPENSSL_VERSION_INFO[0] == 1:
+                openssl += '@1.1'
+            run('brew', 'install', 'fish', openssl, *items)
     else:
         run('sudo apt-get update')
         run('sudo apt-get install -y libgl1-mesa-dev libxi-dev libxrandr-dev libxinerama-dev ca-certificates'
@@ -154,12 +171,13 @@ def setup_bundle_env() -> None:
     os.environ['PATH'] = '{}:{}'.format(os.path.join(SW, 'bin'), os.environ['PATH'])
 
 
-def install_bundle() -> None:
+def install_bundle(dest: str = '', which: str = '') -> None:
+    dest = dest or SW
     cwd = os.getcwd()
-    os.makedirs(SW)
-    os.chdir(SW)
-    with urlopen(BUNDLE_URL.format('macos' if is_macos else 'linux')) as f:
-        data = f.read()
+    os.makedirs(dest, exist_ok=True)
+    os.chdir(dest)
+    which = which or ('macos' if is_macos else 'linux')
+    data = download_with_retry(BUNDLE_URL.format(which))
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:xz') as tf:
         try:
             tf.extractall(filter='fully_trusted')
@@ -170,11 +188,67 @@ def install_bundle() -> None:
         for dirpath, dirnames, filenames in os.walk('.'):
             for f in filenames:
                 if f.endswith('.pc') or (f.endswith('.py') and f.startswith('_sysconfig')):
-                    replace_in_file(os.path.join(dirpath, f), '/sw/sw', SW)
+                    replace_in_file(os.path.join(dirpath, f), '/sw/sw', dest)
                     replaced += 1
         if replaced < 2:
             raise SystemExit('Failed to replace path to SW in bundle')
     os.chdir(cwd)
+
+
+def install_grype() -> str:
+    dest = os.path.join(SW, 'bin')
+    rq = Request('https://api.github.com/repos/anchore/grype/releases/latest', headers={
+        'Accept': 'application/vnd.github.v3+json',
+    })
+    m = json.loads(download_with_retry(rq))
+    for asset in m['assets']:
+        if asset['name'].endswith('_linux_amd64.tar.gz'):
+            url = asset['browser_download_url']
+            break
+    else:
+        raise ValueError('Could not find linux binary for grype')
+    os.makedirs(dest, exist_ok=True)
+    data = download_with_retry(url)
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r') as tf:
+        tf.extract('grype', path=dest, filter='fully_trusted')
+    return os.path.join(dest, 'grype')
+
+
+IGNORED_DEPENDENCY_CVES = [
+    # Python stdlib
+    'CVE-2025-8194', # DoS in tarfile
+    'CVE-2025-6069', # DoS in HTMLParser
+    # glib
+    'CVE-2025-4056', # Only affects Windows, on which we dont run
+]
+
+
+def check_dependencies() -> None:
+    grype = install_grype()
+    with open((gc := os.path.expanduser('~/.grype.yml')), 'w') as f:
+        print('ignore:', file=f)
+        for x in IGNORED_DEPENDENCY_CVES:
+            print('  - vulnerability:', x, file=f)
+    dest = os.path.join(SW, 'linux')
+    os.makedirs(dest, exist_ok=True)
+    install_bundle(dest, os.path.basename(dest))
+    dest = os.path.join(SW, 'macos')
+    os.makedirs(dest, exist_ok=True)
+    install_bundle(dest, os.path.basename(dest))
+    cmdline = [grype, '--by-cve', '--config', gc, '--fail-on', 'medium', '--only-fixed', '--add-cpes-if-none']
+    if (cp := subprocess.run(cmdline + ['dir:' + SW])).returncode != 0:
+        raise SystemExit(cp.returncode)
+    # Now test against the SBOM
+    import runpy
+    orig = sys.argv, sys.stdout
+    sys.argv = ['bypy', 'sbom', 'myproject', '1.0.0']
+    buf = io.StringIO()
+    sys.stdout = buf
+    runpy.run_path('bypy-src')
+    sys.argv, sys.stdout = orig
+    print(buf.getvalue())
+    if (cp := subprocess.run(cmdline, input=buf.getvalue().encode())).returncode != 0:
+        raise SystemExit(cp.returncode)
 
 
 def main() -> None:
@@ -192,12 +266,20 @@ def main() -> None:
         package_kitty()
     elif action == 'test':
         test_kitty()
+    elif action == 'test':
+        test_kitty()
+    elif action == 'govulncheck':
+        subprocess.check_call(['go', 'install', 'golang.org/x/vuln/cmd/govulncheck@latest'])
+        subprocess.check_call(['govulncheck', '-mode=binary', 'kitty/launcher/kitten'])
+        subprocess.check_call(['govulncheck', './...'])
     elif action == 'gofmt':
         q = subprocess.check_output('gofmt -s -l tools kittens'.split()).decode()
         if q.strip():
             q = '\n'.join(filter(lambda x: not x.rstrip().endswith('_generated.go'), q.strip().splitlines())).strip()
             if q:
                 raise SystemExit(q)
+    elif action == 'check-dependencies':
+        check_dependencies()
     else:
         raise SystemExit(f'Unknown action: {action}')
 

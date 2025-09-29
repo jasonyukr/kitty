@@ -44,7 +44,7 @@ class TestScreen(BaseTest):
         s.reset(), s.reset_dirty()
         s.set_mode(IRM)
         s.draw('12345' * 5)
-        s.cursor_back(5)
+        s.cursor_move(5)
         self.ae(s.cursor.x, 0), self.ae(s.cursor.y, 4)
         s.reset_dirty()
         s.draw('ab')
@@ -98,7 +98,7 @@ class TestScreen(BaseTest):
         s.set_mode(IRM)
         s.draw(text * 5)
         self.ae(str(s.line(0)), text)
-        s.cursor_back(5)
+        s.cursor_move(5)
         self.ae(s.cursor.x, 0), self.ae(s.cursor.y, 4)
         s.reset_dirty()
         s.draw('a\u0306b')
@@ -111,7 +111,6 @@ class TestScreen(BaseTest):
         s.draw(txt)
         ln = s.line(0)
         self.ae(txt, ln.as_ansi())
-
 
     def test_rep(self):
         s = self.create_screen()
@@ -162,7 +161,7 @@ class TestScreen(BaseTest):
             s.reset(), s.reset_dirty()
             s.draw('abcde')
             s.cursor.bold = True
-            s.cursor_back(4)
+            s.cursor_move(4)
             s.reset_dirty()
             self.ae(s.cursor.x, 1)
 
@@ -170,11 +169,11 @@ class TestScreen(BaseTest):
         s.insert_characters(2)
         self.ae(str(s.line(0)), 'a  bc')
         self.assertTrue(s.line(0).cursor_from(1).bold)
-        s.cursor_back(1)
+        s.cursor_move(1)
         s.insert_characters(20)
         self.ae(str(s.line(0)), '')
         s.draw('xココ')
-        s.cursor_back(5)
+        s.cursor_move(5)
         s.reset_dirty()
         s.insert_characters(1)
         self.ae(str(s.line(0)), ' xコ')
@@ -270,7 +269,7 @@ class TestScreen(BaseTest):
         self.ae((s.cursor.x, s.cursor.y), (0, 1))
         s.cursor_forward(3)
         self.ae((s.cursor.x, s.cursor.y), (3, 1))
-        s.cursor_back()
+        s.cursor_move()
         self.ae((s.cursor.x, s.cursor.y), (2, 1))
         s.cursor_down()
         self.ae((s.cursor.x, s.cursor.y), (2, 2))
@@ -534,6 +533,34 @@ class TestScreen(BaseTest):
         s.draw('aaaX\tbbbb')
         self.ae(str(s.line(0)) + str(s.line(1)), 'aaaXbbbb')
 
+    def test_backspace(self):
+        s = self.create_screen()
+        q = 'a'*s.columns
+        def backspace(use_bs=True):
+            if use_bs:  # this is how the kernel implements backspace
+                s.draw('\x08 \x08')
+            else:
+                s.cursor_move(1)
+                s.draw(' ')
+                s.cursor_move(1)
+        for use_bs in (True, False):
+            s.reset()
+            s.draw(q)
+            s.draw('b')
+            backspace(use_bs)
+            self.ae(str(s.line(0)), q)
+            self.ae(str(s.line(1)), ' ')
+            self.ae(s.cursor.x, 0)
+            backspace(use_bs)
+            self.ae(str(s.line(0)), q[:-1] + ' ')
+            self.ae(str(s.line(1)), ' ')
+        # Test that CUB does not move cursor onto previous line
+        s.reset()
+        s.draw('a'*s.columns + 'b')
+        self.ae((s.cursor.x, s.cursor.y), (1, 1))
+        parse_bytes(s, b'\x1b[100D')
+        self.ae((s.cursor.x, s.cursor.y), (0, 1))
+
     def test_margins(self):
         # Taken from vttest/main.c
         s = self.create_screen(cols=80, lines=24)
@@ -590,11 +617,13 @@ class TestScreen(BaseTest):
 
     def test_sgr(self):
         s = self.create_screen()
-        s.select_graphic_rendition(0, 1, 37, 42)
+        s.select_graphic_rendition(0, 1, 5, 37, 42)
         s.draw('a')
         c = s.line(0).cursor_from(0)
         self.assertTrue(c.bold)
+        self.assertTrue(c.blink)
         self.ae(c.bg, (2 << 8) | 1)
+        self.ae('\x1b[22;1;5;37;42ma', s.line(0).as_ansi())
         s.cursor_position(2, 1)
         s.select_graphic_rendition(0, 35)
         s.draw('b')
@@ -710,6 +739,10 @@ class TestScreen(BaseTest):
         self.ae(s.text_for_selection(), ('a\u00adb',))
 
     def test_variation_selectors(self):
+        s = self.create_screen(cols=3)
+        q = '*\ufe0f'
+        s.draw(q*(s.columns+1))
+        self.ae(str(s.line(0)), q*(s.columns//2))
         s = self.create_screen(cols=8)
         def widths(text, *widths):
             s.reset()
@@ -1201,6 +1234,10 @@ class TestScreen(BaseTest):
             for i in range(n):
                 s.draw(f'{i}{x}'), s.index(), s.carriage_return()
 
+        from kitty.window import as_text
+        def at():
+            return as_text(s, add_history=True)
+
         s = self.create_screen(cols=5, lines=5, scrollback=15)
         draw_output(3, 'oo')
         draw_prompt('pp')
@@ -1455,6 +1492,34 @@ class TestScreen(BaseTest):
         draw_prompt('p1')
         self.ae(lco(which=3), '0a\n1a')
 
+        # erase last command
+        s = self.create_screen(cols=10, lines=10, scrollback=15)
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(2), mark_prompt(), s.draw('partial')
+        self.ae('before\n$ p1\n0\n1\npartial', at().rstrip())
+        self.ae(lco(), '0\n1')
+        x = s.cursor.x
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())
+        self.ae((x, 1), (s.cursor.x, s.cursor.y))
+        s.reset()
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(2), mark_prompt(), s.draw('partial')
+        x = s.cursor.x
+        s.erase_last_command(False)
+        self.ae('before\n$ p1\npartial', at().rstrip())
+        for scroll in (8, 9, 10):
+            s.reset()
+            s.draw('before'), s.carriage_return(), s.linefeed()
+            draw_prompt('p1'), draw_output(scroll), mark_prompt(), s.draw('partial')
+            s.erase_last_command()
+            self.ae('before\npartial', at().rstrip())
+        s.reset()
+        draw_multicell(s, 'A', scale=2), s.draw('a'), draw_multicell(s, 'B', scale=2), s.draw('b\r\n')
+        draw_prompt('p1'), draw_output(9), mark_prompt(), s.draw('partial')
+        s.erase_last_command()
+        self.ae(at().rstrip(), '  a  b\npartial')
+
     def test_pointer_shapes(self):
         from kitty.window import set_pointer_shape
         s = self.create_screen()
@@ -1524,6 +1589,73 @@ class TestScreen(BaseTest):
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 0, 0), 126)})
         q({'transparent_background_color2': '#ffffff@-1'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 255, 255), 255)})
+
+    def test_multi_cursors(self):
+        s = self.create_screen()
+        c = s.callbacks
+        # Test detection
+        def ec(payload=''):
+            return f'\x1b[>{payload} q'.encode()  # ]
+        parse_bytes(s, ec())
+        self.ae(c.wtcbuf, ec('1;2;3;29;30;40;100;101'))
+
+        def current() -> dict[int, tuple[int, int]]:
+            ans = {}
+            c.clear()
+            parse_bytes(s, ec('100'))
+            for entry in c.wtcbuf[6:-2].decode().split(';'):
+                if entry:
+                    which, _, y, x = map(int, entry.split(':'))
+                    ans.setdefault(which, set()).add((x-1, y-1))
+            return ans
+        self.ae({}, current())
+
+        def a(which: int, *positions: tuple[int, int], region=None) -> dict[int, tuple[int, int]]:
+            if positions:
+                buf = [f'\x1b[>{which};']  # ]
+                buf.extend(f'2:{y+1}:{x+1};' for x, y in positions)
+                parse_bytes(s, ''.join(buf).encode() + b' q')
+            if region:
+                if region is True:
+                    parse_bytes(s, ec(f'{which};4'))
+                else:
+                    left, top, right, bottom = region
+                    parse_bytes(s, ec(f'{which};4:{top+1}:{left+1}:{bottom+1}:{right+1}'))
+            return current()
+
+        self.ae(a(1, region=True), {1:{(x, y) for x in range(s.columns) for y in range(s.lines)}})
+        self.ae(a(0, region=True), {})
+        self.ae(a(29, region=(1, 2, 2, 3)), {29: {(1, 2), (2, 2), (1, 3), (2, 3)}})
+        self.ae(a(2, (1, 2), (1, 3)), {29: {(2, 3), (2, 2)}, 2: {(1, 2), (1, 3)}})
+        self.ae(a(0, (1, 2), (2, 3)), {29: {(2, 2)}, 2: {(1, 3)}})
+        self.ae(a(0, region=True), {})
+        s.cursor.x, s.cursor.y = 1, 2
+        parse_bytes(s, ec('3;0'))
+        self.ae(current(), {3: {(1, 2)}})
+        parse_bytes(s, ec('3;2:3'))
+        self.ae(current(), {3: {(1, 2)}})
+        parse_bytes(s, ec('0;4:3:1:4'))
+        self.ae(current(), {})
+
+        def sc(op, r=0, g=0, b=0, slot=40):
+            parse_bytes(s, ec(f'{slot};{op}:{r}:{g}:{b}'))
+            c.clear()
+            parse_bytes(s, ec('101'))
+            for x in c.wtcbuf[3:-2].decode().split(';')[1:]:
+                parts = x.split(':')
+                if int(parts[0]) == slot:
+                    if op < 2:
+                        self.ae(op, int(parts[1]))
+                    elif op == 2:
+                        self.ae((op, r, g, b), tuple(map(int, parts[1:])))
+                    else:
+                        self.ae((op, r), tuple(map(int, parts[1:])))
+                    break
+        for slot in (40, 30):
+            sc(0, slot=slot)
+            sc(1, slot=slot)
+            sc(2, 1, 2, 3, slot=slot)
+            sc(5, 13, slot=slot)
 
 
 def detect_url(self, scale=1):
