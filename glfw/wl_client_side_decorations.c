@@ -211,53 +211,68 @@ scale(unsigned thickness, float factor) {
 static void
 render_minimize(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
-    unsigned thickness = height / 12;
-    unsigned baseline = height - thickness * 2;
+    unsigned icon_width = (unsigned)(width * 0.6);
+    unsigned icon_height = (unsigned)(height * 0.6);
+    unsigned x_offset = (width - icon_width) / 2;
+    unsigned y_offset = (height - icon_height) / 2;
+
+    unsigned thickness = icon_height / 12;
+    unsigned baseline = icon_height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.8f);
-    if (!thickness || width <= side_margin || height < baseline + 2 * thickness) return;
-    render_hline(out, width, thickness, baseline, side_margin, width - side_margin);
+    if (!thickness || icon_width <= side_margin || icon_height < baseline + 2 * thickness) return;
+    render_hline(out + y_offset * width + x_offset, width, thickness, baseline, side_margin, icon_width - side_margin);
 }
 
 static void
 render_maximize(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
-    unsigned thickness = height / 12, half_thickness = thickness / 2;
-    unsigned baseline = height - thickness * 2;
+    unsigned icon_width = (unsigned)(width * 0.6);
+    unsigned icon_height = (unsigned)(height * 0.6);
+    unsigned x_offset = (width - icon_width) / 2;
+    unsigned y_offset = (height - icon_height) / 2;
+
+    unsigned thickness = icon_height / 12, half_thickness = thickness / 2;
+    unsigned baseline = icon_height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.0f);
     unsigned top = 4 * thickness;
-    if (!half_thickness || width <= side_margin || height < baseline + 2 * thickness || top >= baseline) return;
-    render_hline(out, width, half_thickness, baseline, side_margin, width - side_margin);
-    render_hline(out, width, thickness, top + thickness, side_margin, width - side_margin);
-    render_vline(out, width, half_thickness, side_margin, top, baseline);
-    render_vline(out, width, half_thickness, width - side_margin, top, baseline);
+    if (!half_thickness || icon_width <= side_margin || icon_height < baseline + 2 * thickness || top >= baseline) return;
+    render_hline(out + y_offset * width + x_offset, width, half_thickness, baseline, side_margin, icon_width - side_margin);
+    render_hline(out + y_offset * width + x_offset, width, thickness, top + thickness, side_margin, icon_width - side_margin);
+    render_vline(out + y_offset * width + x_offset, width, half_thickness, side_margin, top, baseline);
+    render_vline(out + y_offset * width + x_offset, width, half_thickness, icon_width - side_margin, top, baseline);
 }
 
 static void
 render_restore(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
-    unsigned thickness = height / 12, half_thickness = thickness / 2;
-    unsigned baseline = height - thickness * 2;
+    unsigned icon_width = (unsigned)(width * 0.6);
+    unsigned icon_height = (unsigned)(height * 0.6);
+    unsigned x_offset = (width - icon_width) / 2;
+    unsigned y_offset = (height - icon_height) / 2;
+
+    unsigned thickness = icon_height / 12, half_thickness = thickness / 2;
+    unsigned baseline = icon_height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.0f);
     unsigned top = 4 * thickness;
-    if (!half_thickness || width <= side_margin || height < baseline + 2 * thickness || top >= baseline) return;
+    if (!half_thickness || icon_width <= side_margin || icon_height < baseline + 2 * thickness || top >= baseline) return;
     unsigned box_height = ((baseline - top) * 3) / 4;
     if (box_height < 2*thickness) return;
-    unsigned box_width = ((width - 2 * side_margin) * 3) / 4;
+    unsigned box_width = ((icon_width - 2 * side_margin) * 3) / 4;
     // bottom box
     unsigned box_top = baseline - box_height, left = side_margin, right = side_margin + box_width, bottom = baseline;
-    render_hline(out, width, thickness, box_top + thickness, left, right);
-    render_hline(out, width, half_thickness, bottom, left, right);
-    render_vline(out, width, half_thickness, left, box_top, bottom);
-    render_vline(out, width, half_thickness, side_margin + box_width, baseline - box_height, baseline);
+    render_hline(out + y_offset * width + x_offset, width, thickness, box_top + thickness, left, right);
+    render_hline(out + y_offset * width + x_offset, width, half_thickness, bottom, left, right);
+    render_vline(out + y_offset * width + x_offset, width, half_thickness, left, box_top, bottom);
+    render_vline(out + y_offset * width + x_offset, width, half_thickness, side_margin + box_width, baseline - box_height, baseline);
     // top box
     unsigned box_x_shift = 2 * thickness, box_y_shift = 2 * thickness;
-    box_x_shift = MIN(width - right, box_x_shift);
+    box_x_shift = MIN(icon_width - right, box_x_shift);
     box_y_shift = MIN(box_top, box_y_shift);
     unsigned left2 = left + box_x_shift, right2 = right + box_x_shift, top2 = box_top - box_y_shift, bottom2 = bottom - box_y_shift;
-    render_hline(out, width, thickness, top2 + thickness, left2, right2);
-    render_vline(out, width, half_thickness, right2, top2, bottom2);
-    render_hline(out, width, half_thickness, bottom2, right, right2);
-    render_vline(out, width, half_thickness, left2, top2, box_top);
+    render_hline(out + y_offset * width + x_offset, width, thickness, top2 + thickness, left2, right2);
+    render_vline(out + y_offset * width + x_offset, width, half_thickness, right2, top2, bottom2);
+    render_hline(out + y_offset * width + x_offset, width, half_thickness, bottom2, right, right2);
+    render_vline(out + y_offset * width + x_offset, width, half_thickness, left2, top2, box_top);
 }
 
 static void
@@ -278,14 +293,19 @@ render_line(uint8_t *buf, unsigned width, unsigned height, unsigned thickness, i
 static void
 render_close(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
-    unsigned thickness = height / 12;
-    unsigned baseline = height - thickness * 2;
+    unsigned icon_width = (unsigned)(width * 0.6);
+    unsigned icon_height = (unsigned)(height * 0.6);
+    unsigned x_offset = (width - icon_width) / 2;
+    unsigned y_offset = (height - icon_height) / 2;
+
+    unsigned thickness = icon_height / 12;
+    unsigned baseline = icon_height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.3f);
-    int top = baseline - (width - 2 * side_margin);
+    int top = baseline - (icon_width - 2 * side_margin);
     if (top <= 0) return;
     unsigned line_thickness = scale(thickness, 1.5f);
-    render_line(out, width, height, line_thickness, side_margin, top, width - side_margin, baseline);
-    render_line(out, width, height, line_thickness, side_margin, baseline, width - side_margin, top);
+    render_line(out + y_offset * width + x_offset, width, icon_height, line_thickness, side_margin, top, icon_width - side_margin, baseline);
+    render_line(out + y_offset * width + x_offset, width, icon_height, line_thickness, side_margin, baseline, icon_width - side_margin, top);
 }
 
 static uint32_t
