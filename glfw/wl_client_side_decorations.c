@@ -209,6 +209,7 @@ scale(unsigned thickness, float factor) {
 }
 
 static void
+__attribute__((unused))
 render_minimize(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12;
@@ -219,6 +220,7 @@ render_minimize(uint8_t *out, unsigned width, unsigned height) {
 }
 
 static void
+__attribute__((unused))
 render_maximize(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12, half_thickness = thickness / 2;
@@ -233,6 +235,7 @@ render_maximize(uint8_t *out, unsigned width, unsigned height) {
 }
 
 static void
+__attribute__((unused))
 render_restore(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12, half_thickness = thickness / 2;
@@ -345,11 +348,16 @@ render_title_bar(_GLFWwindow *window, bool to_front_buffer) {
     } else if (appearance == GLFW_COLOR_SCHEME_DARK) { bg_color = dark_bg; fg_color = dark_fg; hover_bg = hover_dark_bg; is_dark = true; }
     uint8_t *output = to_front_buffer ? decs.titlebar.buffer.data.front : decs.titlebar.buffer.data.back;
 
+    (void)is_maximized;
+    (void)hover_bg;
+
     // render text part
     size_t button_size = decs.titlebar.buffer.height;
     unsigned num_buttons = 1;
+/*
     if (window->wl.wm_capabilities.maximize) num_buttons++;
     if (window->wl.wm_capabilities.minimize) num_buttons++;
+*/
     if (window->wl.title && window->wl.title[0] && _glfw.callbacks.draw_text) {
         if (_glfw.callbacks.draw_text((GLFWwindow*)window, window->wl.title, fg_color, bg_color, output, decs.titlebar.buffer.width, decs.titlebar.buffer.height, 0, 0, num_buttons * button_size, false)) goto render_buttons;
     }
@@ -366,10 +374,12 @@ render_buttons:
 #define drawb(which, antialias, func, hover_bg) { \
     render_button(func, antialias, (uint32_t*)output, alpha_mask, button_size, decs.titlebar.buffer.width, button_size, left, decs.which.hovered ? hover_bg : bg_color, fg_color); decs.which.left = left; decs.which.width = button_size; left += button_size; }
 
+/*
     if (window->wl.wm_capabilities.minimize) drawb(minimize, false, render_minimize, hover_bg);
     if (window->wl.wm_capabilities.maximize) {
         if (is_maximized) { drawb(maximize, false, render_restore, hover_bg); } else { drawb(maximize, false, render_maximize, hover_bg); }
     }
+*/
     drawb(close, true, render_close, is_dark ? 0xff880000: 0xffc80000);
     free(alpha_mask);
 #undef drawb
