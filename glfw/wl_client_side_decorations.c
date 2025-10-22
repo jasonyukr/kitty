@@ -281,14 +281,19 @@ render_line(uint8_t *buf, unsigned width, unsigned height, unsigned thickness, i
 static void
 render_close(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
-    unsigned thickness = height / 12;
-    unsigned baseline = height - thickness * 2;
+    unsigned icon_width = (unsigned)(width * 0.6);
+    unsigned icon_height = (unsigned)(height * 0.6);
+    unsigned x_offset = (width - icon_width) / 2;
+    unsigned y_offset = (height - icon_height) / 2;
+
+    unsigned thickness = icon_height / 12;
+    unsigned baseline = icon_height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.3f);
-    int top = baseline - (width - 2 * side_margin);
+    int top = baseline - (icon_width - 2 * side_margin);
     if (top <= 0) return;
     unsigned line_thickness = scale(thickness, 1.5f);
-    render_line(out, width, height, line_thickness, side_margin, top, width - side_margin, baseline);
-    render_line(out, width, height, line_thickness, side_margin, baseline, width - side_margin, top);
+    render_line(out + y_offset * width + x_offset, width, icon_height, line_thickness, side_margin, top, icon_width - side_margin, baseline);
+    render_line(out + y_offset * width + x_offset, width, icon_height, line_thickness, side_margin, baseline, icon_width - side_margin, top);
 }
 
 static uint32_t
