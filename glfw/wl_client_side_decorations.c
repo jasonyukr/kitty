@@ -387,6 +387,32 @@ render_buttons:
 */
     drawb(close, true, render_close, is_dark ? 0xff880000: 0xffc80000);
     free(alpha_mask);
+
+    // Overlay a 2px inside border on the titlebar surface (top/left/right)
+    {
+        const uint32_t border = 0xff333333;
+        const size_t w = (size_t)decs.titlebar.buffer.width;
+        const size_t h = (size_t)decs.titlebar.buffer.height;
+        const size_t stride = (size_t)decs.titlebar.buffer.stride;
+        if (w > 0 && h > 0) {
+            // Top horizontal band (y = 0..min(1,h-1))
+            uint32_t *row0 = (uint32_t*)output;
+            for (size_t x = 0; x < w; x++) row0[x] = border;
+            if (h > 1) {
+                uint32_t *row1 = (uint32_t*)(output + 1 * stride);
+                for (size_t x = 0; x < w; x++) row1[x] = border;
+            }
+
+            // Left and right vertical bands across titlebar height
+            for (size_t yy = 0; yy < h; yy++) {
+                uint32_t *r = (uint32_t*)(output + yy * stride);
+                r[0] = border;
+                if (w > 1) r[1] = border;
+                r[w - 1] = border;
+                if (w > 1) r[w - 2] = border;
+            }
+        }
+    }
 #undef drawb
 }
 
@@ -481,6 +507,44 @@ render_shadows(_GLFWwindow *window) {
 }
 #undef st
 
+static void
+render_borders(_GLFWwindow *window) {
+    // Draw a 1 device-pixel border using only surfaces that are inside the
+    // visible window rectangle to avoid any pixels outside the window rect.
+    // Color: 0xFF666666 (opaque ARGB)
+    const uint32_t color = 0xff333333;
+
+    // Titlebar: draw top, left and right edges inside the visible region
+    _GLFWWaylandBufferPair *tb = &decs.titlebar.buffer;
+    if ((size_t)tb->width > 0 && (size_t)tb->height > 0) {
+        // Top horizontal line at y = 0
+        size_t y = 0;
+        uint32_t *tf = (uint32_t*)(tb->data.front + y * (size_t)tb->stride);
+        uint32_t *tbk = (uint32_t*)(tb->data.back  + y * (size_t)tb->stride);
+        for (size_t x = 0; x < (size_t)tb->width; x++) { tf[x] = color; tbk[x] = color; }
+
+        // Left and right vertical lines across the titlebar height
+        size_t xr = (size_t)tb->width - 1;
+        for (size_t yy = 0; yy < (size_t)tb->height; yy++) {
+            uint32_t *rowf = (uint32_t*)(tb->data.front + yy * (size_t)tb->stride);
+            uint32_t *rowb = (uint32_t*)(tb->data.back  + yy * (size_t)tb->stride);
+            rowf[0] = color; rowb[0] = color;
+            rowf[xr] = color; rowb[xr] = color;
+        }
+    }
+
+    // Bottom edge: draw on the first row of the bottom shadow surface, which
+    // aligns with the bottom of the content area. This keeps the bottom line
+    // visually at the window rectangle while avoiding any overdraw outside.
+    _GLFWWaylandBufferPair *b = &decs.shadow_bottom.buffer;
+    if ((size_t)b->width > 0 && (size_t)b->height > 0) {
+        size_t y = 0;
+        uint32_t *rf = (uint32_t*)(b->data.front + y * (size_t)b->stride);
+        uint32_t *rb = (uint32_t*)(b->data.back  + y * (size_t)b->stride);
+        for (size_t x = 0; x < (size_t)b->width; x++) { rf[x] = color; rb[x] = color; }
+    }
+}
+
 static bool
 create_shm_buffers(_GLFWwindow* window) {
     decs.mapping.size = 0;
@@ -517,6 +581,7 @@ create_shm_buffers(_GLFWwindow* window) {
     wl_shm_pool_destroy(pool);
     render_title_bar(window, true);
     render_shadows(window);
+    render_borders(window);
     debug("Created decoration buffers at scale: %f\n", decs.for_window_state.fscale);
     return true;
 }
