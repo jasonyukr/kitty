@@ -1311,7 +1311,7 @@ draw_centered_alpha_mask(size_t screen_width, size_t screen_height, size_t width
 static void
 draw_os_window_outer_border(const OSWindow *osw) {
     // Draw inside-rect border using scissor + clear, to avoid any shader/viewport pitfalls.
-    const color_type border = 0x333333;
+    const color_type border = 0x0b0a09;
     const unsigned W = osw->viewport_width, H = osw->viewport_height;
     if (W == 0 || H == 0) return;
 

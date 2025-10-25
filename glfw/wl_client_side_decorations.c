@@ -390,7 +390,7 @@ render_buttons:
 
     // Overlay a 2px inside border on the titlebar surface (top/left/right)
     {
-        const uint32_t border = 0xff333333;
+        const uint32_t border = 0xff0b0a09;
         const size_t w = (size_t)decs.titlebar.buffer.width;
         const size_t h = (size_t)decs.titlebar.buffer.height;
         const size_t stride = (size_t)decs.titlebar.buffer.stride;
@@ -512,7 +512,7 @@ render_borders(_GLFWwindow *window) {
     // Draw a 1 device-pixel border using only surfaces that are inside the
     // visible window rectangle to avoid any pixels outside the window rect.
     // Color: 0xFF666666 (opaque ARGB)
-    const uint32_t color = 0xff333333;
+    const uint32_t color = 0xff0b0a09;
 
     // Titlebar: draw top, left and right edges inside the visible region
     _GLFWWaylandBufferPair *tb = &decs.titlebar.buffer;
