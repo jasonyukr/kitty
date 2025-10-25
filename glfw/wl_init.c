@@ -308,6 +308,11 @@ static void keyboardHandleEnter(void* data UNUSED,
     _glfw.wl.serial = serial; _glfw.wl.input_serial = serial; _glfw.wl.keyboard_enter_serial = serial;
     _glfw.wl.keyboardFocusId = window->id;
     _glfwInputWindowFocus(window, true);
+
+    // Ensure CSD reflects actual focus state on Wayland
+    if (csd_change_title(window) && !window->wl.waiting_for_swap_to_commit)
+        wl_surface_commit(window->wl.surface);
+
     uint32_t* key;
     if (keys && _glfw.wl.keyRepeatInfo.key) {
         wl_array_for_each(key, keys) {
@@ -332,6 +337,11 @@ static void keyboardHandleLeave(void* data UNUSED,
     _glfw.wl.serial = serial;
     _glfw.wl.keyboardFocusId = 0;
     _glfwInputWindowFocus(window, false);
+
+    // Ensure CSD reflects focus loss on Wayland
+    if (csd_change_title(window) && !window->wl.waiting_for_swap_to_commit)
+        wl_surface_commit(window->wl.surface);
+
     toggleTimer(&_glfw.wl.eventLoopData, _glfw.wl.keyRepeatInfo.keyRepeatTimer, 0);
 }
 
