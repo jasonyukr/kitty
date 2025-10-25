@@ -357,7 +357,7 @@ render_title_bar(_GLFWwindow *window, bool to_front_buffer) {
     (void)hover_bg;
 
     // Hack the colors
-    fg_color = !is_focused ? 0xffd0d0d0 : 0xffa0a0a0;
+    fg_color = _glfwPlatformWindowFocused(window) ? 0xffc5c5c5 : 0xff808080;
     bg_color = 0xff2a2a2a;
 
     // render text part
