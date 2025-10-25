@@ -356,6 +356,10 @@ render_title_bar(_GLFWwindow *window, bool to_front_buffer) {
     (void)is_maximized;
     (void)hover_bg;
 
+    // Hack the colors
+    fg_color = !is_focused ? 0xffd0d0d0 : 0xffa0a0a0;
+    bg_color = 0xff2a2a2a;
+
     // render text part
     size_t button_size = decs.titlebar.buffer.height;
     unsigned num_buttons = 1;
