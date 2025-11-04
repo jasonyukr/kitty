@@ -251,10 +251,14 @@ class Tab:  # {{{
     def _startup(self, session_tab: SessionTab) -> None:
         target_tab = self
         boss = get_boss()
-        for window in session_tab.windows:
+        active_window_id = 0
+        did_focus_matching_spec = False
+        first_window_id = 0
+        for i, window in enumerate(session_tab.windows):
             spec = window.launch_spec
+            launched_window: Window | None = None
             if isinstance(spec, SpecialWindowInstance):
-                self.new_special_window(spec)
+                launched_window = self.new_special_window(spec)
             else:
                 from .launch import launch
                 spec.opts.add_to_session = self.created_in_session_name
@@ -263,6 +267,12 @@ class Tab:  # {{{
                     startup_command_via_shell_integration=window.run_command_at_shell_startup)
                 if launched_window is not None:
                     launched_window.serialized_id = window.serialized_id
+            if launched_window is not None:
+                if not first_window_id:
+                    first_window_id = launched_window.id
+                if session_tab.active_window_idx == i:
+                    active_window_id = launched_window.id
+                    did_focus_matching_spec = False
             if window.resize_spec is not None:
                 self.resize_window(*window.resize_spec)
             if window.focus_matching_window_spec:
@@ -275,6 +285,8 @@ class Tab:  # {{{
                 ):
                     tab = w.tabref()
                     if tab:
+                        did_focus_matching_spec = True
+                        active_window_id = 0
                         target_tab = tab or self
                         tm = tab.tab_manager_ref()
                         if tm and boss.active_tab is not target_tab:
@@ -283,8 +295,10 @@ class Tab:  # {{{
                             target_tab.set_active_window(w)
                         boss.focus_os_window(w.os_window_id)
 
-        with suppress(IndexError):
-            self.windows.set_active_window_group_for(self.windows.all_windows[session_tab.active_window_idx])
+        if not did_focus_matching_spec and not active_window_id:
+            active_window_id = first_window_id
+        if active_window_id and not did_focus_matching_spec:
+            self.windows.set_active_window_group_for(active_window_id)
         if session_tab.layout_state:
             self.current_layout.unserialize(session_tab.layout_state, self.windows)
 
@@ -310,9 +324,11 @@ class Tab:  # {{{
             if session_base_dir and ser_opts.relocatable:
                 cwd = os.path.relpath(cwd, session_base_dir)
             return cwd
+        most_common_cwd = ''
         cwds = {w.id: make_relative(w.cwd_for_serialization) for g in groups for w in g}
-        from collections import Counter
-        most_common_cwd, _ = Counter(cwds.values()).most_common(1)[0]
+        if cwds:
+            from collections import Counter
+            most_common_cwd, _ = Counter(cwds.values()).most_common(1)[0]
         for i, g in enumerate(groups):
             gw: list[str] = []
             for window in g:
@@ -402,10 +418,15 @@ class Tab:  # {{{
         tm = self.tab_manager_ref()
         if tm is not None:
             ly = self.current_layout
+            opts = get_options()
+            draw_borders = (
+                ly.must_draw_borders or opts.draw_window_borders_for_single_window or
+                (ly.needs_window_borders and self.windows.has_more_than_one_visible_group)
+            )
             self.borders(
                 all_windows=self.windows,
                 current_layout=ly, tab_bar_rects=tm.tab_bar_rects,
-                draw_window_borders=(ly.needs_window_borders and self.windows.num_visble_groups > 1) or ly.must_draw_borders
+                draw_window_borders=draw_borders
             )
 
     def create_layout_object(self, name: str) -> Layout:
@@ -969,6 +990,8 @@ class Tab:  # {{{
                 return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager
             if query == 'parent_focused':
                 return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
+            if query == 'focused_os_window':
+                return self.os_window_id == last_focused_os_window_id()
             return False
         if field == 'session':
             match query:
@@ -1043,6 +1066,24 @@ class TabManager:  # {{{
             self._add_tab(tab)
             if i == session.active_tab_idx:
                 active_tab = tab
+
+        # Handle focus_tab_spec if specified
+        if session.focus_tab_spec is not None:
+            spec = session.focus_tab_spec.strip()
+            # Try to parse as a plain number (index)
+            try:
+                idx = int(spec)
+                # Clamp to valid range
+                idx = max(0, min(idx, len(self.tabs) - 1))
+                active_tab = self.tabs[idx]
+            except ValueError:
+                # Not a plain number, treat as match expression
+                from .fast_data_types import get_boss
+                boss = get_boss()
+                matched_tabs = list(boss.match_tabs(spec, self.tabs))
+                if matched_tabs:
+                    active_tab = matched_tabs[0]
+
         if active_tab is not None:
             idx = self.tabs.index(active_tab)
             self._set_active_tab(idx)
@@ -1273,12 +1314,10 @@ class TabManager:  # {{{
         is_first: bool = False
     ) -> list[str]:
         ans = []
-        hmap = {tab_id: i for i, tab_id in enumerate(self.active_tab_history)}
-        if (at := self.active_tab) is not None:
-            hmap[at.id] = len(self.active_tab_history) + 1
-        def skey(tab: Tab) -> int:
-            return hmap.get(tab.id, -1)
-        for tab in sorted(self, key=skey):
+        active_tab_index = -1
+        for i, tab in enumerate(self.tabs):
+            if tab is self.active_tab:
+                active_tab_index = i
             ans.extend(tab.serialize_state_as_session(session_path, matched_windows, ser_opts))
         if ans:
             prefix = [] if is_first else ['', '', 'new_os_window']
@@ -1287,6 +1326,10 @@ class TabManager:  # {{{
             if self.wm_name and self.wm_name != appname:
                 prefix.append(f'os_window_name {self.wm_name}')
             ans = prefix + ans
+            # Add focus_tab command to preserve the active tab
+            if active_tab_index >= 0:
+                ans.append('')
+                ans.append(f'focus_tab {active_tab_index}')
         return ans
 
     @property
@@ -1374,12 +1417,21 @@ class TabManager:  # {{{
             while self.active_tab_history and self.active_tab_history[-1] == tab.id:
                 self.active_tab_history.pop()
 
+        def previous_active_tab() -> Tab | None:
+            while self.active_tab_history:
+                tab_id = self.active_tab_history.pop()
+                if tab_id != removed_tab.id:
+                    if (ans := self.tab_for_id(tab_id)) is not None:
+                        return ans
+            return self.tabs[0] if self.tabs else None
+
         if active_tab_before_removal is removed_tab:
-            if len(self.tabs) == 0:
-                self._active_tab_idx = 0
-            elif len(self.tabs) == 1:
-                remove_from_end_of_active_history(self.tabs[0])
-                self._set_active_tab(0, store_in_history=False)
+            if len(tabs) == 0 or (len(tabs) == 1 and removed_tab is tabs[0]):
+                tab = previous_active_tab()
+                if tab is None:
+                    self._active_tab_idx = 0
+                else:
+                    self._set_active_tab(self.tabs.index(tab), store_in_history=False)
             else:
                 next_active_tab: Tab | None = None
                 match get_options().tab_switch_strategy:
@@ -1387,6 +1439,8 @@ class TabManager:  # {{{
                         while self.active_tab_history and next_active_tab is None:
                             tab_id = self.active_tab_history.pop()
                             next_active_tab = self.tab_for_id(tab_id)
+                            if next_active_tab not in tabs:
+                                next_active_tab = None
                     case 'left':
                         next_active_tab = tabs[(tabs.index(active_tab_before_removal) - 1 + len(tabs)) % len(tabs)]
                         remove_from_end_of_active_history(next_active_tab)

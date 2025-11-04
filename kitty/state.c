@@ -609,7 +609,7 @@ os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
                 central->top = 0;
                 long bottom = os_window->viewport_height - tab_bar_height;
                 central->bottom = MAX(0, bottom);
-                tab_bar->top = central->bottom + 1 + margin_inner;
+                tab_bar->top = central->bottom + margin_inner;
                 break;
         }
         tab_bar->left = central->left; tab_bar->right = central->right;
@@ -832,8 +832,8 @@ wrap_region(Region *r) {
         PyStructSequence_SET_ITEM(ans, 1, PyLong_FromUnsignedLong(r->top));
         PyStructSequence_SET_ITEM(ans, 2, PyLong_FromUnsignedLong(r->right));
         PyStructSequence_SET_ITEM(ans, 3, PyLong_FromUnsignedLong(r->bottom));
-        PyStructSequence_SET_ITEM(ans, 4, PyLong_FromUnsignedLong(r->right - r->left + 1));
-        PyStructSequence_SET_ITEM(ans, 5, PyLong_FromUnsignedLong(r->bottom - r->top + 1));
+        PyStructSequence_SET_ITEM(ans, 4, PyLong_FromUnsignedLong(r->right - r->left));
+        PyStructSequence_SET_ITEM(ans, 5, PyLong_FromUnsignedLong(r->bottom - r->top));
     }
     return ans;
 }
@@ -1200,7 +1200,8 @@ PYWRAP1(patch_global_colors) {
         else if (PyLong_Check(val)) OPT(name) = PyLong_AsLong(val); \
     } \
 }
-    P(active_border_color); P(inactive_border_color); P(bell_border_color); P(tab_bar_background); P(tab_bar_margin_color);
+    P(active_border_color); P(inactive_border_color); P(bell_border_color); P(tab_bar_background);
+    P(tab_bar_margin_color); P(macos_titlebar_color); P(wayland_titlebar_color);
     if (configured) {
         P(background); P(url_color);
     }

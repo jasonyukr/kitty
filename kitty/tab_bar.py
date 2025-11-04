@@ -72,6 +72,7 @@ class DrawData(NamedTuple):
     powerline_style: PowerlineStyle
     tab_bar_edge: EdgeLiteral
     max_tab_title_length: int
+    os_window_id: int
 
     def tab_fg(self, tab: TabBarData) -> int:
         if tab.is_active:
@@ -598,7 +599,7 @@ class TabBar:
             opts.tab_activity_symbol,
             opts.tab_powerline_style,
             'bottom' if opts.tab_bar_edge == BOTTOM_EDGE else 'top',
-            opts.tab_title_max_length,
+            opts.tab_title_max_length, self.os_window_id,
         )
         ts = opts.tab_bar_style
         if ts == 'separator':
@@ -696,14 +697,17 @@ class TabBar:
             return
         self.cell_width = cell_width
         s = self.screen
-        viewport_width = max(4 * cell_width, tab_bar.width - 2 * self.margin_width)
-        ncells = viewport_width // cell_width
+        available_width = tab_bar.width - 2 * self.margin_width
+        ncells = max(4, available_width // cell_width)
         s.resize(1, ncells)
         s.reset_mode(DECAWM)
+        cell_area_width = ncells * cell_width
+        available_width_for_left_margin = max(0, tab_bar.width - self.margin_width - cell_area_width)
+        extra_width = max(0, tab_bar.width - 2 * self.margin_width - cell_area_width)
+        left_margin = min(self.margin_width + extra_width // 2, available_width_for_left_margin)
         self.laid_out_once = True
-        margin = (viewport_width - ncells * cell_width) // 2 + self.margin_width
         self.window_geometry = g = WindowGeometry(
-            margin, tab_bar.top, viewport_width - margin, tab_bar.bottom, s.columns, s.lines)
+            left_margin, tab_bar.top, left_margin + cell_area_width, tab_bar.bottom, s.columns, s.lines)
         self.update_blank_rects(central, tab_bar, vw, vh)
         set_tab_bar_render_data(self.os_window_id, self.screen, *g[:4])
 

@@ -33,6 +33,9 @@ class WindowGroup:
         self.windows: list[WindowType] = []
         self.id = next(group_id_counter)
 
+    def __repr__(self) -> str:
+        return f'WindowGroup(id={self.id}, windows={", ".join(str(w.id) for w in self.windows)})'
+
     def __len__(self) -> int:
         return len(self.windows)
 
@@ -510,9 +513,11 @@ class WindowList:
         return {gr.id: ((gr is ag and draw_active_borders) or gr.needs_attention) for gr in self.groups}
 
     @property
-    def num_visble_groups(self) -> int:
+    def has_more_than_one_visible_group(self) -> bool:
         ans = 0
         for gr in self.groups:
             if gr.is_visible_in_layout:
                 ans += 1
-        return ans
+                if ans > 1:
+                    return True
+        return False

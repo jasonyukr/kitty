@@ -16,6 +16,7 @@ import (
 	"github.com/kovidgoyal/kitty/tools/ignorefiles"
 	"github.com/kovidgoyal/kitty/tools/tty"
 	"github.com/kovidgoyal/kitty/tools/tui"
+	"github.com/kovidgoyal/kitty/tools/tui/graphics"
 	"github.com/kovidgoyal/kitty/tools/tui/loop"
 	"github.com/kovidgoyal/kitty/tools/tui/readline"
 	"github.com/kovidgoyal/kitty/tools/utils"
@@ -123,6 +124,7 @@ type State struct {
 	display_title                       bool
 	pygments_style, dark_pygments_style string
 	syntax_aliases                      map[string]string
+	max_disk_cache_size                 int64
 
 	selections    []string
 	current_idx   CollectionIndex
@@ -131,6 +133,7 @@ type State struct {
 	redraw_needed bool
 }
 
+func (s State) DiskCacheSize() int64                  { return s.max_disk_cache_size }
 func (s State) HighlightStyles() (string, string)     { return s.pygments_style, s.dark_pygments_style }
 func (s State) SyntaxAliases() map[string]string      { return s.syntax_aliases }
 func (s State) DisplayTitle() bool                    { return s.display_title }
@@ -204,16 +207,29 @@ type ScreenSize struct {
 }
 
 type Handler struct {
-	state            State
-	screen_size      ScreenSize
-	result_manager   *ResultManager
-	lp               *loop.Loop
-	rl               *readline.Readline
-	err_chan         chan error
-	shortcut_tracker config.ShortcutTracker
-	msg_printer      *message.Printer
-	spinner          *tui.Spinner
-	preview_manager  *PreviewManager
+	state                 State
+	screen_size           ScreenSize
+	result_manager        *ResultManager
+	lp                    *loop.Loop
+	rl                    *readline.Readline
+	err_chan              chan error
+	shortcut_tracker      config.ShortcutTracker
+	msg_printer           *message.Printer
+	spinner               *tui.Spinner
+	preview_manager       *PreviewManager
+	last_rendered_preview Preview
+	graphics_handler      GraphicsHandler
+}
+
+func (self *Handler) on_escape_code(etype loop.EscapeCodeType, payload []byte) error {
+	switch etype {
+	case loop.APC:
+		gc := graphics.GraphicsCommandFromAPC(payload)
+		if gc != nil {
+			return self.graphics_handler.HandleGraphicsCommand(gc)
+		}
+	}
+	return nil
 }
 
 func (h *Handler) draw_screen() (err error) {
@@ -222,15 +238,8 @@ func (h *Handler) draw_screen() (err error) {
 	defer func() {
 		h.state.mouse_state.UpdateHoveredIds()
 		h.state.mouse_state.ApplyHoverStyles(h.lp)
-		h.lp.EndAtomicUpdate()
-	}()
-	h.lp.ClearScreen()
-	h.state.mouse_state.ClearCellRegions()
-	switch h.state.screen {
-	case NORMAL:
-		matches, is_complete := h.get_results()
-		h.lp.SetWindowTitle(h.state.WindowTitle())
-		defer func() { // so that the cursor ends up in the right place
+		h.graphics_handler.ApplyPlacements(h.lp)
+		if h.state.screen == NORMAL { // so that the cursor ends up in the right place
 			h.lp.MoveCursorTo(1, 1)
 			if h.state.DisplayTitle() {
 				h.lp.Println(h.state.WindowTitle())
@@ -238,7 +247,16 @@ func (h *Handler) draw_screen() (err error) {
 			} else {
 				h.draw_search_bar(0)
 			}
-		}()
+		}
+		h.lp.EndAtomicUpdate()
+	}()
+	h.lp.ClearScreenButNotGraphics()
+	h.graphics_handler.ClearPlacements(h.lp)
+	h.state.mouse_state.ClearCellRegions()
+	switch h.state.screen {
+	case NORMAL:
+		matches, is_complete := h.get_results()
+		h.lp.SetWindowTitle(h.state.WindowTitle())
 		y := SEARCH_BAR_HEIGHT + utils.IfElse(h.state.DisplayTitle(), 1, 0)
 		footer_height, err := h.draw_footer()
 		if err != nil {
@@ -292,6 +310,7 @@ func (h *Handler) OnInitialize() (ans string, err error) {
 			}
 		}
 	}
+	err = h.graphics_handler.Initialize(h.lp)
 	h.result_manager.set_root_dir()
 	h.draw_screen()
 	return
@@ -718,6 +737,7 @@ func (h *Handler) set_state_from_config(conf *Config, opts *Options) (err error)
 	h.state.pygments_style = conf.Pygments_style
 	h.state.dark_pygments_style = conf.Dark_pygments_style
 	h.state.syntax_aliases = conf.Syntax_aliases
+	h.state.max_disk_cache_size = int64(conf.Cache_size * (1024 * 1024 * 1024))
 	return
 }
 
@@ -775,6 +795,7 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 	lp.MouseTrackingMode(loop.FULL_MOUSE_TRACKING)
 	lp.ColorSchemeChangeNotifications()
 	handler := Handler{lp: lp, err_chan: make(chan error, 8), msg_printer: message.NewPrinter(utils.LanguageTag()), spinner: tui.NewSpinner("dots")}
+	defer handler.graphics_handler.Cleanup()
 	handler.rl = readline.New(lp, readline.RlInit{
 		Prompt: "> ", ContinuationPrompt: ". ", Completer: FilePromptCompleter(handler.state.CurrentDir),
 	})
@@ -810,6 +831,10 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 		lp.RequestCurrentColorScheme()
 		return handler.OnInitialize()
 	}
+	lp.OnFinalize = func() string {
+		handler.graphics_handler.Finalize(lp)
+		return ""
+	}
 	lp.OnResize = func(old, new_size loop.ScreenSize) (err error) {
 		handler.init_sizes(new_size)
 		return handler.draw_screen()
@@ -826,6 +851,7 @@ func main(_ *cli.Command, opts *Options, args []string) (rc int, err error) {
 	lp.OnKeyEvent = handler.OnKeyEvent
 	lp.OnText = handler.OnText
 	lp.OnMouseEvent = handler.OnMouseEvent
+	lp.OnEscapeCode = handler.on_escape_code
 	lp.OnWakeup = func() (err error) {
 		select {
 		case err = <-handler.err_chan:

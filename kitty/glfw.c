@@ -346,7 +346,8 @@ static void
 cocoa_out_of_sequence_render(OSWindow *window) {
     make_os_window_context_current(window);
     window->needs_render = true;
-    bool rendered = render_os_window(window, monotonic(), true);
+    bool rendered = false;
+    if (window->fonts_data->sprite_map) rendered = render_os_window(window, monotonic(), true);
     if (!rendered) {
         blank_os_window(window);
         swap_window_buffers(window);
@@ -1019,24 +1020,22 @@ toggle_fullscreen_for_os_window(OSWindow *w) {
             lsc.edge = prev->previous.edge;
             lsc.requested_bottom_margin = prev->previous.requested_bottom_margin;
             lsc.requested_top_margin = prev->previous.requested_top_margin;
-            lsc.requested_left_margin = prev->requested_left_margin;
-            lsc.requested_right_margin = prev->requested_right_margin;
+            lsc.requested_left_margin = prev->previous.requested_left_margin;
+            lsc.requested_right_margin = prev->previous.requested_right_margin;
             lsc.was_toggled_to_fullscreen = false;
             glfwSetLayerShellConfig(w->handle, &lsc);
             return true;
         }
-        if (prev->edge == GLFW_EDGE_TOP || prev->edge == GLFW_EDGE_BOTTOM || prev->edge == GLFW_EDGE_LEFT || prev->edge == GLFW_EDGE_RIGHT) {
-            lsc.edge = GLFW_EDGE_CENTER;
-            lsc.previous.edge = prev->edge;
-            lsc.previous.requested_right_margin = prev->requested_right_margin;
-            lsc.previous.requested_left_margin = prev->requested_left_margin;
-            lsc.previous.requested_top_margin = prev->requested_top_margin;
-            lsc.previous.requested_bottom_margin = prev->requested_bottom_margin;
-            lsc.requested_bottom_margin = 0; lsc.requested_top_margin = 0; lsc.requested_left_margin = 0; lsc.requested_right_margin = 0;
-            lsc.was_toggled_to_fullscreen = true;
-            glfwSetLayerShellConfig(w->handle, &lsc);
-            return true;
-        }
+        lsc.edge = GLFW_EDGE_CENTER;
+        lsc.previous.edge = prev->edge;
+        lsc.previous.requested_right_margin = prev->requested_right_margin;
+        lsc.previous.requested_left_margin = prev->requested_left_margin;
+        lsc.previous.requested_top_margin = prev->requested_top_margin;
+        lsc.previous.requested_bottom_margin = prev->requested_bottom_margin;
+        lsc.requested_bottom_margin = 0; lsc.requested_top_margin = 0; lsc.requested_left_margin = 0; lsc.requested_right_margin = 0;
+        lsc.was_toggled_to_fullscreen = true;
+        glfwSetLayerShellConfig(w->handle, &lsc);
+        return true;
     }
     return false;
 }
@@ -1923,6 +1922,15 @@ toggle_secure_input(PYNOARG) {
 }
 
 static PyObject*
+macos_cycle_through_os_windows(PYNOARG) {
+#ifdef __APPLE__
+    cocoa_cycle_through_os_windows();
+#endif
+    Py_RETURN_NONE;
+}
+
+
+static PyObject*
 cocoa_hide_app(PYNOARG) {
 #ifdef __APPLE__
     cocoa_hide();
@@ -2608,6 +2616,7 @@ static PyMethodDef module_methods[] = {
     METHODB(set_clipboard_data_types, METH_VARARGS),
     METHODB(get_clipboard_mime, METH_VARARGS),
     METHODB(toggle_secure_input, METH_NOARGS),
+    METHODB(macos_cycle_through_os_windows, METH_NOARGS),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),
     METHODB(toggle_fullscreen, METH_VARARGS),

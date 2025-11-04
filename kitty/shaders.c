@@ -436,7 +436,7 @@ has_bgimage(OSWindow *w) {
 }
 
 static color_type
-cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, CursorRenderInfo *cursor, OSWindow *os_window, float inactive_text_alpha, float bg_alpha) {
+cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, const CursorRenderInfo *cursor, OSWindow *os_window, float inactive_text_alpha, float bg_alpha) {
     struct GPUCellRenderData {
         GLfloat use_cell_bg_for_selection_fg, use_cell_fg_for_selection_color, use_cell_for_selection_bg;
 
@@ -656,9 +656,29 @@ setup_texture_as_render_target(unsigned width, unsigned height, GLuint *texture_
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     // We use GL_RGBA16 to avoid incorrect colors due to quantization loss when
     // blending, see https://github.com/kovidgoyal/kitty/issues/8953
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    static struct { bool ok; int fmt; } status = { false, GL_RGBA16};
+    glTexImage2D(GL_TEXTURE_2D, 0, status.fmt, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     bind_framebuffer_for_output(*framebuffer_id);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *texture_id, 0);
+    if (!status.ok) {
+        if (check_framebuffer_status() == NULL) {
+            status.ok = true;
+        } else {
+            if (status.fmt == GL_RGBA16) {
+                // Driver does not support 16 bit FBO so let it choose the
+                // format. It will probably end up choosing 8 bit but
+                // inaccurate colors are better than completely broken rendering.
+                // See https://github.com/kovidgoyal/kitty/issues/9068
+                status.fmt = GL_RGBA;
+                free_framebuffer(framebuffer_id);
+                free_texture(texture_id);
+                setup_texture_as_render_target(width, height, texture_id, framebuffer_id);
+                log_error("WARNING: Your GPU driver does not support 16bit textures as framebuffer targets, some colors may be slightly inaccurate.");
+            } else {
+                fatal("Your GPU driver does not support indirect rendering to a GL_RGBA texture via a framebuffer");
+            }
+        }
+    }
 }
 
 static void
@@ -1241,14 +1261,13 @@ draw_cursor_trail(CursorTrail *trail, Window *active_window) {
 
 // OSWindow {{{
 static void
-draw_bg_image(OSWindow *os_window) {
+draw_bg_image(OSWindow *os_window, Tab *tab) {
     if (!has_bgimage(os_window)) return;
     BackgroundImageRenderSettings s = {
         .os_window.width = os_window->viewport_width, .os_window.height = os_window->viewport_height,
         .instance_id = os_window->bgimage->id, .layout=OPT(background_image_layout),
         .linear=OPT(background_image_linear), .bgcolor=OPT(background), .opacity=effective_os_window_alpha(os_window),
     };
-    bind_program(BGIMAGE_PROGRAM);
     GLfloat iwidth = os_window->bgimage->width, iheight = os_window->bgimage->height;
     GLfloat vwidth = s.os_window.width, vheight = s.os_window.height;
     if (CENTER_SCALED == OPT(background_image_layout)) {
@@ -1278,6 +1297,9 @@ draw_bg_image(OSWindow *os_window) {
             bottom += hfrac;
         } break;
     }
+    bind_program(BGIMAGE_PROGRAM);
+    // altough we dont use this VO we need to ensure *some* VAO is bound at this point.
+    bind_vertex_array(tab->border_rects.vao_idx);
     glUniform4f(bgimage_program_layout.uniforms.sizes, vwidth, vheight, iwidth, iheight);
     glUniform1f(bgimage_program_layout.uniforms.tiled, tiled);
     glUniform4f(bgimage_program_layout.uniforms.positions, left, top, right, bottom);
@@ -1361,10 +1383,10 @@ draw_resizing_text(OSWindow *w) {
     if (monotonic() - w->created_at > ms_to_monotonic_t(1000) && w->live_resize.num_of_resize_events > 1) {
         char text[32] = {0};
         unsigned int width = w->live_resize.width, height = w->live_resize.height;
-        snprintf(text, sizeof(text), "%u x %u cells", width / w->fonts_data->fcm.cell_width, height / w->fonts_data->fcm.cell_height);
+        snprintf(text, sizeof(text), "%u by %u cells", width / w->fonts_data->fcm.cell_width, height / w->fonts_data->fcm.cell_height);
         StringCanvas rendered = render_simple_text(w->fonts_data, text);
         if (rendered.canvas) {
-            draw_centered_alpha_mask(width, height, rendered.width, rendered.height, rendered.canvas, OPT(background_opacity));
+            draw_centered_alpha_mask(width, height, rendered.width, rendered.height, rendered.canvas, MAX(0.2f, MIN(OPT(background_opacity), 0.8f)));
             free(rendered.canvas);
         }
     }
@@ -1387,11 +1409,9 @@ blank_os_window(OSWindow *osw) {
 }
 
 static void
-start_os_window_rendering(OSWindow *os_window) {
-    if (os_window->live_resize.in_progress) {
-        blank_os_window(os_window);
-        save_viewport_using_bottom_left_origin(0, 0, os_window->viewport_width, os_window->viewport_height);
-    }
+start_os_window_rendering(OSWindow *os_window, Tab *tab) {
+    // note that during live resize rendering is done in layers
+    if (os_window->live_resize.in_progress) blank_os_window(os_window);
     if (os_window->needs_layers) {
         if (os_window->indirect_output.width != os_window->viewport_width || os_window->indirect_output.height != os_window->viewport_height) {
             if (os_window->indirect_output.texture_id) free_texture(&os_window->indirect_output.texture_id);
@@ -1404,8 +1424,9 @@ start_os_window_rendering(OSWindow *os_window) {
         }
         set_framebuffer_to_use_for_output(os_window->indirect_output.framebuffer_id);
         bind_framebuffer_for_output(0);
+        save_viewport_using_bottom_left_origin(0, 0, os_window->indirect_output.width, os_window->indirect_output.height);
         clear_current_framebuffer();
-        draw_bg_image(os_window);
+        draw_bg_image(os_window, tab);
     }
 }
 
@@ -1420,11 +1441,14 @@ stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window) {
         glBindTexture(GL_TEXTURE_2D, os_window->indirect_output.texture_id);
         glUniform4f(blit_program_layout.uniforms.src_rect, 0, 1, 1, 0);
         glUniform4f(blit_program_layout.uniforms.dest_rect, -1, 1, 1, -1);
-        draw_quad(false, 0);
-    }
-    if (os_window->live_resize.in_progress) {
         restore_viewport();
-        draw_resizing_text(os_window);
+        if (os_window->live_resize.in_progress) save_viewport_using_top_left_origin(
+                0, 0, os_window->viewport_width, os_window->viewport_height, os_window->live_resize.height);
+        draw_quad(false, 0);
+        if (os_window->live_resize.in_progress) {
+            restore_viewport();
+            draw_resizing_text(os_window);
+        }
     }
     // Draw a 1px inside border around the OS window
     draw_os_window_outer_border(os_window);
@@ -1432,7 +1456,7 @@ stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window) {
 
 void
 setup_os_window_for_rendering(OSWindow *os_window, Tab *tab, Window *active_window, bool start) {
-    if (start) start_os_window_rendering(os_window);
+    if (start) start_os_window_rendering(os_window, tab);
     else stop_os_window_rendering(os_window, tab, active_window);
 }
 // }}}

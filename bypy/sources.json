@@ -30,10 +30,10 @@
     },
 
     {
-        "name": "openssl 3.5.2",
+        "name": "openssl 3.5.4",
         "unix": {
             "file_extension": "tar.gz",
-            "hash": "sha256:c53a47e5e441c930c3928cf7bf6fb00e5d129b630e0aa873b08258656e7345ec",
+            "hash": "sha256:967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99",
             "urls": ["https://www.openssl.org/source/{filename}"]
         }
     },
@@ -145,10 +145,10 @@
     },
 
     {
-        "name": "python 3.12.11",
+        "name": "python 3.12.12",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "md5:9613d56b90d0d0cfd19980c7e2956a06",
+            "hash": "sha256:fb85a13414b028c49ba18bbd523c2d055a30b56b18b92ce454ea2c51edc656c4",
             "urls": ["https://www.python.org/ftp/python/{version}/Python-{version}.{file_extension}"]
         }
     },

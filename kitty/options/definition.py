@@ -1224,6 +1224,19 @@ drawn.
 '''
     )
 
+opt('draw_window_borders_for_single_window', 'no',
+    option_type='to_bool',
+    long_text='''
+Draw borders around a window even when there is only a single window visible. When
+enabled and there is only a single window, full borders are drawn around it (as if
+:opt:`draw_minimal_borders` is false). The border will show in the active color when
+the window is focused and the OS window has focus, and in the inactive color when the
+OS window loses focus. This provides a clear visual indicator of whether the kitty
+window is focused. When there are multiple windows visible, this option has no effect
+and normal border drawing rules apply.
+'''
+    )
+
 opt('window_margin_width', '0',
     option_type='edge_width',
     long_text='''
@@ -3254,7 +3267,9 @@ Changing this option by reloading the config is not supported.
 '''
     )
 
-opt('+env', '',
+opt(
+    '+env',
+    '',
     option_type='env',
     add_to_default=False,
     long_text='''
@@ -3268,8 +3283,17 @@ recursively, for example::
     env VAR2=${HOME}/${VAR1}/b
 
 The value of :code:`VAR2` will be :code:`<path to home directory>/a/b`.
-'''
-    )
+
+Use the special
+value :code:`read_from_shell` to have kitty read the specified variables from
+your :opt:`login shell <shell>` configuration.
+Useful if your shell startup files setup a bunch of environment variables that you want available to kitty and
+in kitty session files. Each variable name is treated as a glob pattern to match. For example:
+:code:`env read_from_shell=PATH LANG LC_* XDG_* EDITOR VISUAL`. Note that these variables are only
+read after the configuration is fully processed, thus they are not available for recursive expansion and
+they will override any variables set by other :opt:`env` directives.
+''',
+)
 
 opt('+filter_notification', '', option_type='filter_notification', add_to_default=False, long_text='''
 Specify rules to filter out notifications sent by applications running in kitty.
@@ -4403,6 +4427,8 @@ map('Toggle macOS secure keyboard entry',
     'toggle_macos_secure_keyboard_entry opt+cmd+s toggle_macos_secure_keyboard_entry',
     only='macos',
     )
+
+map('macOS Cycle through OS Windows', 'macos_cycle_through_os_windows cmd+` macos_cycle_through_os_windows', only='macos')
 
 map('Unicode input',
     'input_unicode_character kitty_mod+u kitten unicode_input',

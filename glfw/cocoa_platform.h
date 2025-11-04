@@ -138,6 +138,7 @@ typedef struct _GLFWwindowNS
     int             fbWidth, fbHeight;
     float           xscale, yscale;
     int             blur_radius;
+    bool live_resize_in_progress;
 
     // The total sum of the distances the cursor has been warped
     // since the last cursor motion event was processed
@@ -244,7 +245,6 @@ void* _glfwLoadLocalVulkanLoaderNS(void);
 void _glfwClearDisplayLinks(void);
 void _glfwRestartDisplayLinks(void);
 unsigned _glfwCreateDisplayLink(CGDirectDisplayID);
-void _glfwDispatchRenderFrame(CGDirectDisplayID);
 void _glfwRequestRenderFrame(_GLFWwindow *w);
 
 // event loop

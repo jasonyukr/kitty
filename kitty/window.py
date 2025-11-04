@@ -695,10 +695,10 @@ class Window:
         self.last_focused_at = 0.
         self.is_focused: bool = False
         self.progress = Progress()
+        self.clear_progress_timer: int = 0
         self.last_resized_at = 0.
         self.started_at = monotonic()
         self.created_at = time_ns()
-        self.clear_progress_timer: int = 0
         self.current_remote_data: list[str] = []
         self.current_mouse_event_button = 0
         self.current_clipboard_read_ask: bool | None = None
@@ -722,12 +722,12 @@ class Window:
         self.title_stack: Deque[str] = deque(maxlen=10)
         self.user_vars: dict[str, str] = {}
         self.id: int = add_window(tab.os_window_id, tab.id, self.title)
+        if not self.id:
+            raise Exception(f'No tab with id: {tab.id} in OS Window: {tab.os_window_id} was found, or the window counter wrapped')
         self.clipboard_request_manager = ClipboardRequestManager(self.id)
         self.margin = EdgeWidths()
         self.padding = EdgeWidths()
         self.kitten_result: dict[str, Any] | None = None
-        if not self.id:
-            raise Exception(f'No tab with id: {tab.id} in OS Window: {tab.os_window_id} was found, or the window counter wrapped')
         self.tab_id = tab.id
         self.os_window_id = tab.os_window_id
         self.tabref: Callable[[], TabType | None] = weakref.ref(tab)
@@ -907,6 +907,8 @@ class Window:
                 return False
             if query == 'parent_focused':
                 return active_tab is not None and self.tabref() is active_tab and last_focused_os_window_id() == self.os_window_id
+            if query == 'focused_os_window':
+                return last_focused_os_window_id() == self.os_window_id
             if query == 'self':
                 return self is self_window
             if query == 'overlay_parent':
@@ -1336,6 +1338,9 @@ class Window:
         g |= g << 8
         b |= b << 8
         self.screen.send_escape_code_to_child(ESC_OSC, f'{code};rgb:{r:04x}/{g:04x}/{b:04x}')
+
+    def on_reset(self) -> None:
+        pass
 
     def notify_child_of_resize(self) -> None:
         pty_size = self.last_reported_pty_size
@@ -1920,6 +1925,7 @@ class Window:
         self.screen.cursor.x = self.screen.cursor.y = 0
         if reset:
             self.screen.reset()
+            self.child.reset_termios_state()
         else:
             self.screen.erase_in_display(3 if scrollback else 2, False)
 

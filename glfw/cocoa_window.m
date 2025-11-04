@@ -537,6 +537,7 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
     if (self != nil) {
         window = initWindow;
         _lastScreenStates = [self captureScreenStates];
+        window->ns.live_resize_in_progress = false;
     }
     return self;
 }
@@ -566,7 +567,12 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
     (void)notification;
     NSArray<NSDictionary *> *currentScreenStates = [self captureScreenStates];
     const bool is_screen_change = ![_lastScreenStates isEqualToArray:currentScreenStates];
-    debug_rendering("windowDidResize() called, is_screen_change: %d\n", is_screen_change);
+    NSWindowStyleMask sm = [window->ns.object styleMask];
+    const bool is_fullscreen = (sm & NSWindowStyleMaskFullScreen) != 0;
+    NSRect frame = [window->ns.object frame];
+    debug_rendering(
+            "windowDidResize() called, is_screen_change: %d is_fullscreen: %d live_resize_in_progress: %d frame: %.1fx%.1f@(%.1f, %.1f)\n",
+            is_screen_change, is_fullscreen, window->ns.live_resize_in_progress, frame.size.width, frame.size.height, frame.origin.x, frame.origin.y);
     if (is_screen_change) {
         // This resize likely happened because a screen was added, removed, or changed resolution.
         [_lastScreenStates release];
@@ -608,7 +614,8 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
     // Because of a bug in macOS Tahoe we cannot redraw the window in response
     // to a resize event that was caused by a screen change as the OpenGL
     // context is not ready yet. See: https://github.com/kovidgoyal/kitty/issues/8983
-    if (window->ns.resizeCallback && !is_screen_change) window->ns.resizeCallback((GLFWwindow*)window);
+    if (window->ns.resizeCallback && !is_screen_change && !is_fullscreen && window->ns.live_resize_in_progress)
+        window->ns.resizeCallback((GLFWwindow*)window);
 }
 
 - (void)windowDidMove:(NSNotification *)notification
@@ -782,7 +789,18 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         self.identifier = @"kitty-content-view";
 
         [self updateTrackingAreas];
-        [self registerForDraggedTypes:@[NSPasteboardTypeFileURL, NSPasteboardTypeString]];
+        // Register for file promises in addition to regular files (macOS 10.12+)
+        if (@available(macOS 10.12, *)) {
+            NSMutableArray *types = [NSMutableArray arrayWithObjects:
+                NSPasteboardTypeFileURL,
+                NSPasteboardTypeString,
+                nil];
+            // Add file promise types
+            [types addObjectsFromArray:[NSFilePromiseReceiver readableDraggedTypes]];
+            [self registerForDraggedTypes:types];
+        } else {
+            [self registerForDraggedTypes:@[NSPasteboardTypeFileURL, NSPasteboardTypeString]];
+        }
     }
 
     return self;
@@ -824,12 +842,14 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
 - (void) viewWillStartLiveResize
 {
     if (!window) return;
+    window->ns.live_resize_in_progress = true;
     _glfwInputLiveResize(window, true);
 }
 
 - (void)viewDidEndLiveResize
 {
     if (!window) return;
+    window->ns.live_resize_in_progress = false;
     _glfwInputLiveResize(window, false);
 }
 

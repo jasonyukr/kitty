@@ -213,6 +213,7 @@ screen_reset(Screen *self) {
     set_dynamic_color(self, 110, NULL);
     set_dynamic_color(self, 111, NULL);
     set_color_table_color(self, 104, NULL);
+    CALLBACK("on_reset", NULL)
 }
 
 void
@@ -2848,9 +2849,7 @@ screen_set_cursor(Screen *self, unsigned int mode, uint8_t secondary) {
                 blink = mode % 2;
                 shape = (mode < 3) ? CURSOR_BLOCK : (mode < 5) ? CURSOR_UNDERLINE : (mode < 7) ? CURSOR_BEAM : NO_CURSOR_SHAPE;
             }
-            if (shape != self->cursor->shape || blink != !self->cursor->non_blinking) {
-                self->cursor->shape = shape; self->cursor->non_blinking = !blink;
-            }
+            self->cursor->shape = shape; self->cursor->non_blinking = !blink;
             break;
     }
 }
