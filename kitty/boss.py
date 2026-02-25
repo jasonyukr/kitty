@@ -178,6 +178,7 @@ class OSWindowDict(TypedDict):
     is_active: bool
     last_focused: bool
     tabs: list[TabDict]
+    active_tab_history: tuple[int, ...]
     wm_class: str
     wm_name: str
     background_opacity: float
@@ -508,6 +509,7 @@ class Boss:
                         'is_focused': focused_wid == os_window_id,
                         'last_focused': os_window_id == last_focused,
                         'tabs': tabs,
+                        'active_tab_history': tuple(tm.active_tab_history),
                         'wm_class': tm.wm_class,
                         'wm_name': tm.wm_name,
                         'background_opacity': bo,
@@ -941,9 +943,10 @@ class Boss:
                                 assert isinstance(window.launch_spec, LaunchSpec)
                                 launch(get_boss(), window.launch_spec.opts, window.launch_spec.args)
                     continue
+                wstate = args.start_as if args.start_as and args.start_as != 'normal' else None
                 os_window_id = self.add_os_window(
                     session, wclass=args.cls, wname=args.name, opts_for_size=opts, startup_id=startup_id,
-                    override_title=args.title or None)
+                    override_title=args.title or None, window_state=wstate)
                 if session.focus_os_window:
                     focused_os_window = os_window_id
                 if opts.background_opacity != get_options().background_opacity:
@@ -1318,7 +1321,11 @@ class Boss:
 
     @ac('misc', 'Cycle through OS windows on macOS')
     def macos_cycle_through_os_windows(self) -> None:
-        macos_cycle_through_os_windows()
+        macos_cycle_through_os_windows(False)
+
+    @ac('misc', 'Cycle through OS windows backwards on macOS')
+    def macos_cycle_through_os_windows_backwards(self) -> None:
+        macos_cycle_through_os_windows(True)
 
     @ac('misc', 'Hide macOS kitty application')
     def hide_macos_app(self) -> None:
@@ -1951,6 +1958,18 @@ class Boss:
         if not needs_confirmation:
             self.mark_os_window_for_close(os_window_id)
             return
+        current_confirmation_window: Window | None = None
+        if tm.confirm_close_window_id:
+            for tab in tm:
+                for w in tab:
+                    if w.id == tm.confirm_close_window_id:
+                        current_confirmation_window = w
+                        break
+                if current_confirmation_window is not None:
+                    break
+        if current_confirmation_window:
+            self.set_active_window(current_confirmation_window, switch_os_window_if_needed=True)
+            return
         msg = msg or _('It has {} windows?').format(num)
         msg = _('Are you sure you want to close this OS Window?') + ' ' + msg
         w = self.confirm(msg, self.handle_close_os_window_confirmation, os_window_id, window=tm.active_window, title=_('Close OS window'))
@@ -2030,7 +2049,7 @@ class Boss:
                 s.shutdown(socket.SHUT_RDWR)
             s.close()
 
-    def display_scrollback(self, window: Window, data: bytes | str, input_line_number: int = 0, title: str = '', report_cursor: bool = True) -> None:
+    def display_scrollback(self, window: Window, data: bytes | str, input_line_number: int = 0, title: str = '', report_cursor: bool = True) -> Window | None:
 
         def prepare_arg(x: str) -> str:
             x = x.replace('INPUT_LINE_NUMBER', str(input_line_number))
@@ -2060,10 +2079,11 @@ class Boss:
                     else:
                         bdata = re.sub(br'\x1b\].*?\x1b\\', b'', bdata)
 
-            tab.new_special_window(
+            return tab.new_special_window(
                 SpecialWindow(cmd, bdata, title or _('History'), overlay_for=window.id, cwd=window.cwd_of_child),
                 copy_colors_from=self.active_window
                 )
+        return None
 
     @ac('misc', 'Edit the kitty.conf config file in your favorite text editor')
     def edit_config_file(self, *a: Any) -> None:
@@ -2327,7 +2347,7 @@ class Boss:
         window.set_logo(f'{path}-128{ext}', position='bottom-right', alpha=0.25)
         window.allow_remote_control = True
 
-    def switch_focus_to(self, window_id: int) -> None:
+    def switch_focus_to_in_active_tab(self, window_id: int) -> None:
         tab = self.active_tab
         if tab:
             tab.set_active_window(window_id)
@@ -2400,10 +2420,12 @@ class Boss:
 
     @ac('cp', 'Paste from the clipboard to the active window')
     def paste_from_clipboard(self) -> None:
-        text = get_clipboard_string()
-        if text:
-            w = self.window_for_dispatch or self.active_window
-            if w is not None:
+        w = self.window_for_dispatch or self.active_window
+        if w is not None:
+            if w.send_paste_event():
+                return
+            text = get_clipboard_string()
+            if text:
                 w.paste_with_actions(text)
 
     def current_primary_selection(self) -> str:
@@ -2414,10 +2436,12 @@ class Boss:
 
     @ac('cp', 'Paste from the primary selection, if present, otherwise the clipboard to the active window')
     def paste_from_selection(self) -> None:
-        text = self.current_primary_selection_or_clipboard()
-        if text:
-            w = self.window_for_dispatch or self.active_window
-            if w is not None:
+        w = self.window_for_dispatch or self.active_window
+        if w is not None:
+            if w.send_paste_event(is_primary_selection=True):
+                return
+            text = self.current_primary_selection_or_clipboard()
+            if text:
                 w.paste_with_actions(text)
 
     def set_primary_selection(self) -> None:
@@ -2862,7 +2886,9 @@ class Boss:
             window.refresh()
 
     def apply_new_options(self, opts: Options) -> None:
+        bg_before = get_options().background
         bg_colors_before = {w.id: w.screen.color_profile.default_bg for w in self.all_windows}
+        configured_color_scheme_changed = bg_before.is_dark != opts.background.is_dark
         # Update options storage
         set_options(opts, is_wayland(), self.args.debug_rendering, self.args.debug_font_fallback)
         apply_options_update()
@@ -2899,6 +2925,12 @@ class Boss:
         for w in self.all_windows:
             if w.screen.color_profile.default_bg != bg_colors_before.get(w.id):
                 self.default_bg_changed_for(w.id)
+            elif configured_color_scheme_changed:
+                # the application running in the window could have set the
+                # background color, so it wont change because of a config
+                # reload, but the application might still want to be notified
+                # that the user's color scheme preference has changed.
+                w.report_color_scheme_preference_if_wanted()
             w.refresh(reload_all_gpu_data=True)
         load_shader_programs.recompile_if_needed()
 
@@ -2930,6 +2962,8 @@ class Boss:
         from .guess_mime_type import clear_mime_cache
         clear_mime_cache()
         store_effective_config()
+        from .tab_bar import clear_caches
+        clear_caches()
 
     def safe_delete_temp_file(self, path: str) -> None:
         if is_path_in_temp_dir(path):
@@ -3059,8 +3093,7 @@ class Boss:
                     else:
                         return
 
-            for detached_window in src_tab.detach_window(window):
-                target_tab.attach_window(detached_window)
+            target_tab.attach_windows(src_tab.detach_window(window))
             self._cleanup_tab_after_window_removal(src_tab)
             target_tab.make_active()
 
@@ -3254,6 +3287,12 @@ class Boss:
                 self.on_system_color_scheme_change('dark', False)
             case 'no_preference':
                 self.on_system_color_scheme_change('no_preference', False)
+            case 'toggle':
+                match theme_colors.applied_theme:
+                    case 'light':
+                        self.on_system_color_scheme_change('dark', False)
+                    case _:
+                        self.on_system_color_scheme_change('light', False)
             case _:
                 self.show_error(_('Unknown color scheme type'), _('{} is not a valid color scheme type').format(which))
 
@@ -3376,4 +3415,6 @@ class Boss:
     def ungrab_keyboard(self) -> None:
         grab_keyboard(False)
 
-
+    def search_scrollback_in_active(self) -> None:
+        if w := self.active_window:
+            w.search_scrollback()

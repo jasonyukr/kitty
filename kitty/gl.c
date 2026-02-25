@@ -215,7 +215,7 @@ save_texture_as_png(uint32_t texture_id, const char *filename) {
         data[i] = (r <<  0) | (g << 8) | (b << 16) | (a << 24);
     }
 
-    const char *png = png_from_32bit_rgba(data, width, height, &sz, true);
+    const char *png = png_from_32bit_rgba((char*)data, width, height, &sz, true);
     if (!sz) fatal("Failed to save PNG to %s with error: %s", filename, png);
     free(data);
     FILE* file = fopen(filename, "wb");
@@ -391,6 +391,12 @@ map_buffer(ssize_t idx, GLenum access) {
     return ans;
 }
 
+static void*
+map_buffer_range(ssize_t idx, GLbitfield access, int offset, unsigned size) {
+    return glMapBufferRange(buffers[idx].usage, offset, size, access);
+}
+
+
 static void
 unmap_buffer(ssize_t idx) {
     glUnmapBuffer(buffers[idx].usage);
@@ -500,16 +506,16 @@ alloc_vao_buffer(ssize_t vao_idx, GLsizeiptr size, size_t bufnum, GLenum usage) 
 }
 
 void*
-map_vao_buffer(ssize_t vao_idx, size_t bufnum, GLenum access) {
+map_vao_buffer_for_write_only(ssize_t vao_idx, size_t bufnum, int offset, unsigned size) {
     ssize_t buf_idx = vaos[vao_idx].buffers[bufnum];
     bind_buffer(buf_idx);
-    return map_buffer(buf_idx, access);
+    return map_buffer_range(buf_idx, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT, offset, size);
 }
 
 void*
-alloc_and_map_vao_buffer(ssize_t vao_idx, GLsizeiptr size, size_t bufnum, GLenum usage, GLenum access) {
-    ssize_t buf_idx = alloc_vao_buffer(vao_idx, size, bufnum, usage);
-    return map_buffer(buf_idx, access);
+alloc_and_map_vao_buffer(ssize_t vao_idx, GLsizeiptr size, size_t bufnum, bool frequently_updated) {
+    ssize_t buf_idx = alloc_vao_buffer(vao_idx, size, bufnum, frequently_updated ? GL_STREAM_DRAW : GL_STATIC_DRAW);
+    return map_buffer(buf_idx, GL_WRITE_ONLY);
 }
 
 void

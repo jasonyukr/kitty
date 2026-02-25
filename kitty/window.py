@@ -96,7 +96,7 @@ from .options.types import Options
 from .progress import Progress
 from .rgb import to_color
 from .terminfo import get_capabilities
-from .types import MouseEvent, OverlayType, WindowGeometry, ac, run_once
+from .types import MouseEvent, NeighborsMap, OverlayType, WindowGeometry, ac, run_once
 from .typing_compat import BossType, ChildType, EdgeLiteral, TabType, TypedDict
 from .utils import (
     color_as_int,
@@ -250,6 +250,7 @@ class WindowDict(TypedDict):
     at_prompt: bool
     created_at: int
     in_alternate_screen: bool
+    neighbors: NeighborsMap
 
 
 class PipeData(TypedDict):
@@ -1290,6 +1291,9 @@ class Window:
         if self.override_title is None:
             self.title_updated()
 
+    def osc_context(self, ctx_data: memoryview) -> None:
+        pass  # this is systemd's useless OSC 3008 context protocol https://systemd.io/OSC_CONTEXT/
+
     def icon_changed(self, new_icon: memoryview) -> None:
         pass  # TODO: Implement this
 
@@ -1393,11 +1397,15 @@ class Window:
         return self.screen.color_profile.default_bg.is_dark
 
     def on_color_scheme_preference_change(self, via_escape_code: bool = False) -> None:
-        if self.screen.color_preference_notification and not via_escape_code:
-            self.report_color_scheme_preference()
+        if not via_escape_code:
+            self.report_color_scheme_preference_if_wanted()
         self.call_watchers(self.watchers.on_color_scheme_preference_change, {
             'is_dark': self.is_dark, 'via_escape_code': via_escape_code
         })
+
+    def report_color_scheme_preference_if_wanted(self) -> None:
+        if self.screen.color_preference_notification:
+            self.report_color_scheme_preference()
 
     def report_color_scheme_preference(self) -> None:
         n = 1 if self.is_dark else 2
@@ -1839,6 +1847,12 @@ class Window:
         path = resolve_custom_file(path) if path else ''
         set_window_logo(self.os_window_id, self.tab_id, self.id, path, position or '', alpha, png_data)
 
+    def send_paste_event(self, is_primary_selection: bool = False) -> bool:
+        if not self.screen.paste_events:
+            return False
+        self.clipboard_request_manager.send_paste_event(is_primary_selection)
+        return True
+
     def paste_with_actions(self, text: str) -> None:
         if self.destroyed or not text:
             return
@@ -1934,7 +1948,12 @@ class Window:
         return get_mouse_data_for_window(self.os_window_id, self.tab_id, self.id)
 
     # Serialization {{{
-    def as_dict(self, is_focused: bool = False, is_self: bool = False, is_active: bool = False) -> WindowDict:
+    def as_dict(
+        self, is_focused: bool = False, is_self: bool = False, is_active: bool = False,
+        neighbors_map: NeighborsMap | None = None,
+    ) -> WindowDict:
+        if neighbors_map is None:
+            neighbors_map = {}
         return {
             'id': self.id,
             'is_focused': is_focused,
@@ -1954,6 +1973,7 @@ class Window:
             'user_vars': self.user_vars,
             'created_at': self.created_at,
             'in_alternate_screen': self.screen.is_using_alternate_linebuf(),
+            'neighbors': neighbors_map,
         }
 
     def serialize_state(self) -> dict[str, Any]:
@@ -2086,11 +2106,29 @@ class Window:
     # actions {{{
 
     @ac('cp', 'Show scrollback in a pager like less')
-    def show_scrollback(self) -> None:
+    def show_scrollback(self) -> Optional['Window']:
         text = self.as_text(as_ansi=True, add_history=True, add_wrap_markers=True)
         data = self.pipe_data(text, has_wrap_markers=True)
         cursor_on_screen = self.screen.scrolled_by < self.screen.lines - self.screen.cursor.y
-        get_boss().display_scrollback(self, data['text'], data['input_line_number'], report_cursor=cursor_on_screen)
+        return get_boss().display_scrollback(self, data['text'], data['input_line_number'], report_cursor=cursor_on_screen)
+
+    @ac('cp', '''
+        Search scrollback in a pager like less. If there is selected text, it is automatically searched for.
+        Note that this assumes that pressing the / key triggers search mode in the page configured as the
+        scrollback pager.
+    ''')
+    def search_scrollback(self) -> None:
+        text = self.text_for_selection()
+        w = self.show_scrollback()
+        if w is not None:
+            w.send_key('/')
+            if text:
+                btext = text.encode()
+                sanitized = replace_c0_codes_except_nl_space_tab(btext)
+                if not w.screen.in_bracketed_paste_mode:
+                    sanitized = sanitized.replace(b'\n', b'\x1bE')
+                w.screen.paste_bytes(sanitized)
+                w.send_key('enter')
 
     def show_cmd_output(self, which: CommandOutput, title: str = 'Command output', as_ansi: bool = True, add_wrap_markers: bool = True) -> None:
         text = self.cmd_output(which, as_ansi=as_ansi, add_wrap_markers=add_wrap_markers)
@@ -2129,6 +2167,16 @@ class Window:
         ''')
     def show_last_non_empty_command_output(self) -> None:
         self.show_cmd_output(CommandOutput.last_non_empty, 'Last non-empty command output')
+
+    @ac('cp', '''
+        Copy the last non-empty output from a shell command to the clipboard
+
+        Requires :ref:`shell_integration` to work
+        ''')
+    def copy_last_command_output(self) -> None:
+        text = self.cmd_output(CommandOutput.last_non_empty, as_ansi=False, add_wrap_markers=False)
+        if text:
+            set_clipboard_string(text)
 
     @ac('cp', 'Paste the specified text into the current window. ANSI C escapes are decoded.')
     def paste(self, text: str) -> None:

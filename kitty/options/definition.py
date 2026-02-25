@@ -1498,10 +1498,9 @@ The horizontal alignment of the tab bar, can be one of: :code:`left`,
 '''
     )
 
-opt('tab_bar_min_tabs', '2',
-    option_type='tab_bar_min_tabs', ctype='uint',
+opt('tab_bar_min_tabs', '2', option_type='tab_bar_min_tabs',
     long_text='The minimum number of tabs that must exist before the tab bar is shown.'
-    )
+)
 
 opt('tab_switch_strategy', 'previous',
     choices=('last', 'left', 'previous', 'right'),
@@ -1694,7 +1693,7 @@ opt(
     option_type='unit_float',
     ctype='float',
     long_text="""
-The opacity of the background. A number between zero and one, where one is
+The opacity of the terminal background color. A number between zero and one, where one is
 opaque and zero is fully transparent. This will only work if supported by the
 OS (for instance, when using a compositor under X11). Note that it only sets
 the background color's opacity in cells that have the same background color as
@@ -1708,7 +1707,10 @@ launch your editor. See also :opt:`transparent_background_colors`.
 Be aware that using a value less than 1.0 is a (possibly
 significant) performance hit. When using a low value for this setting, it is
 desirable that you set the :opt:`background` color to a color the matches the
-general color of the desktop background, for best text rendering.
+general color of the desktop background, for best text rendering. Note also,
+that this setting does not apply to the :opt:`background_image`, if any. The
+background image can itself have transparency via its alpha channel if desired,
+and that will be respected.
 
 If you want to dynamically change transparency of windows, set
 :opt:`dynamic_background_opacity` to :code:`yes` (this is off by default as it
@@ -3984,6 +3986,22 @@ To get the output of the last jumped to command, use :code:`@last_visited_cmd_ou
 Requires :ref:`shell integration <shell_integration>` to work.
 '''
     )
+
+map('Search the scrollback within a pager',
+    'search_scrollback kitty_mod+/ search_scrollback',
+    long_text='''
+Search for currently selected text in the scrollback using the configured :opt:`scrollback_pager`.
+Assumes that pressing the :kbd:`/` key triggers search mode in the pager. If you want to create
+a manual mapping with a special pager for this, you can use something like:
+
+    map f1 combine : launch --stdin-source=@screen_scrollback --stdin-add-formatting --type=overlay mypager : send_key /
+
+For more sophisticated control, such as using the current selection, use :ac:`remote_control_script`.
+''')
+
+map('Search the scrollback within a pager', 'search_scrollback cmd+f search_scrollback', only='macos')
+
+
 egr()  # }}}
 
 
@@ -4363,6 +4381,23 @@ map('Open selected path',
     long_text='Select a path/filename and open it with the default open program.'
     )
 
+map('Insert chosen file',
+    'insert_chosen_file kitty_mod+p>c kitten choose-files',
+    long_text='''
+Select a file using the :doc:`choose-files </kittens/choose-files>` kitten and insert
+it into the terminal.
+'''
+    )
+
+map('Insert chosen directory',
+    'insert_chosen_directory kitty_mod+p>d kitten choose-files --mode=dir',
+    long_text='''
+Select a directory using the :doc:`choose-files </kittens/choose-files>` kitten and insert
+it into the terminal.
+'''
+    )
+
+
 map('Insert selected line',
     'insert_selected_line kitty_mod+p>l kitten hints --type line --program -',
     long_text='''
@@ -4429,6 +4464,7 @@ map('Toggle macOS secure keyboard entry',
     )
 
 map('macOS Cycle through OS Windows', 'macos_cycle_through_os_windows cmd+` macos_cycle_through_os_windows', only='macos')
+map('macOS Cycle through OS Windows backwards', 'macos_cycle_through_os_windows_backwards cmd+shift+` macos_cycle_through_os_windows_backwards', only='macos')
 
 map('Unicode input',
     'input_unicode_character kitty_mod+u kitten unicode_input',

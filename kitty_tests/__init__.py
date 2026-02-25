@@ -81,6 +81,9 @@ class Callbacks:
     def title_changed(self, data, is_base64=False) -> None:
         self.titlebuf.append(process_title_from_child(data, is_base64, ''))
 
+    def osc_context(self, data):
+        pass
+
     def icon_changed(self, data) -> None:
         self.iconbuf += str(data, 'utf-8')
 
@@ -402,7 +405,7 @@ class PTY:
             self.process_input_from_child(0)
 
     def send_da1_response(self, data: str) -> None:
-        self.write_to_child('\x1b[' + data, flush=True)
+        self.write_to_child('\x1b[' + data, flush=False) # ]]]]]]
 
     def send_cmd_to_child(self, cmd, flush=False):
         self.callbacks.last_cmd_exit_status = sys.maxsize

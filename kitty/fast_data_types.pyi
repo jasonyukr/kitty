@@ -948,7 +948,7 @@ def toggle_secure_input() -> None:
     pass
 
 
-def macos_cycle_through_os_windows() -> None:
+def macos_cycle_through_os_windows(backwards: bool) -> None:
     pass
 
 
@@ -1065,7 +1065,7 @@ def next_window_id() -> int:
     pass
 
 
-def mark_tab_bar_dirty(os_window_id: int) -> None:
+def mark_tab_bar_dirty(os_window_id: int, should_be_shown: bool) -> None:
     pass
 
 
@@ -1218,6 +1218,7 @@ class Screen:
     linebuf: LineBuf
     in_bracketed_paste_mode: bool
     in_band_resize_notification: bool
+    paste_events: bool
     color_preference_notification: bool
     cursor_visible: bool
     scrolled_by: int
@@ -1797,19 +1798,3 @@ class StreamingBase64Encodeer:
     def reset(self) -> bytes: ...
     # encode the specified data, return number of bytes written dest should be at least 4/3 *src + 2 bytes in size
     def encode_into(self, dest: WriteableBuffer, src: ReadableBuffer) -> int: ...
-
-
-
-class DiskCache:
-    small_hole_threshold: int
-    defrag_factor: int
-    @property
-    def total_size(self) -> int: ...
-
-    def add(self, key: bytes, data: bytes) -> None: ...
-    def remove(self, key: bytes) -> bool: ...
-    def remove_from_ram(self, predicate: Callable[[bytes], bool]) -> int: ...
-    def num_cached_in_ram(self) -> int: ...
-    def get(self, key: bytes, store_in_ram: bool = False) -> bytes: ...  # raises KeyError if not found
-    def size_on_disk(self) -> int: ...
-    def clear(self) -> None: ...

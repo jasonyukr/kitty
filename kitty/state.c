@@ -320,8 +320,7 @@ static void
 update_window_title(id_type os_window_id, id_type tab_id, id_type window_id, PyObject *title) {
     WITH_WINDOW(os_window_id, tab_id, window_id)
         Py_CLEAR(window->title);
-        window->title = title;
-        Py_XINCREF(window->title);
+        if (title) window->title = Py_NewRef(title);
     END_WITH_WINDOW;
 }
 
@@ -329,9 +328,8 @@ void
 set_os_window_title_from_window(Window *w, OSWindow *os_window) {
     if (os_window->disallow_title_changes || os_window->title_is_overriden) return;
     if (w->title && w->title != os_window->window_title) {
-        Py_XDECREF(os_window->window_title);
-        os_window->window_title = w->title;
-        Py_INCREF(os_window->window_title);
+        Py_CLEAR(os_window->window_title);
+        os_window->window_title = Py_NewRef(w->title);
         set_os_window_title(os_window, PyUnicode_AsUTF8(w->title));
     }
 }
@@ -371,10 +369,11 @@ remove_window_inner(Tab *tab, id_type id) {
     if (active_window_id) {
         for (unsigned int w = 0; w < tab->num_windows; w++) {
             if (tab->windows[w].id == active_window_id) {
-                tab->active_window = w; break;
+                tab->active_window = w; return;
             }
         }
     }
+    if (tab->active_window >= tab->num_windows) tab->active_window = 0;
 }
 
 static void
@@ -409,6 +408,7 @@ detach_window(id_type os_window_id, id_type tab_id, id_type id) {
                 add_detached_window(tab->windows + i);
                 zero_at_i(tab->windows, i);
                 remove_i_from_array(tab->windows, i, tab->num_windows);
+                if (tab->active_window >= tab->num_windows) tab->active_window = tab->num_windows ? tab->num_windows - 1 : 0;
                 break;
             }
         }
@@ -528,12 +528,16 @@ set_active_tab(id_type os_window_id, unsigned int idx) {
 
 static void
 set_active_window(id_type os_window_id, id_type tab_id, id_type window_id) {
-    WITH_WINDOW(os_window_id, tab_id, window_id)
-        (void)window;
-        tab->active_window = w;
+    WITH_TAB(os_window_id, tab_id)
+        tab->active_window = 0;
+        for (unsigned w = 0; w < tab->num_windows; w++) {
+            if (tab->windows[w].id == window_id) {
+                tab->active_window = w; break;
+            }
+        }
         osw->needs_render = true;
         set_os_window_chrome(osw);
-    END_WITH_WINDOW;
+    END_WITH_TAB;
 }
 
 static bool
@@ -593,7 +597,7 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
 
 void
 os_window_regions(OSWindow *os_window, Region *central, Region *tab_bar) {
-    if (!OPT(tab_bar_hidden) && os_window->num_tabs >= OPT(tab_bar_min_tabs)) {
+    if (!OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
         central->left = 0; central->right = os_window->viewport_width;
@@ -946,9 +950,10 @@ PYWRAP1(set_os_window_chrome) {
 }
 
 PYWRAP1(mark_tab_bar_dirty) {
-    id_type os_window_id = PyLong_AsUnsignedLongLong(args);
-    if (PyErr_Occurred()) return NULL;
+    id_type os_window_id; int should_be_shown;
+    PA("Kp", &os_window_id, &should_be_shown);
     WITH_OS_WINDOW(os_window_id)
+        os_window->has_too_few_tabs = !should_be_shown;
         os_window->tab_bar_data_updated = false;
     END_WITH_OS_WINDOW
     Py_RETURN_NONE;
@@ -1202,6 +1207,7 @@ PYWRAP1(patch_global_colors) {
 }
     P(active_border_color); P(inactive_border_color); P(bell_border_color); P(tab_bar_background);
     P(tab_bar_margin_color); P(macos_titlebar_color); P(wayland_titlebar_color);
+    P(scrollbar_handle_color); P(scrollbar_track_color);
     if (configured) {
         P(background); P(url_color);
     }
@@ -1514,7 +1520,7 @@ static PyMethodDef module_methods[] = {
     MW(current_application_quit_request, METH_NOARGS),
     MW(set_os_window_chrome, METH_VARARGS),
     MW(focus_os_window, METH_VARARGS),
-    MW(mark_tab_bar_dirty, METH_O),
+    MW(mark_tab_bar_dirty, METH_VARARGS),
     MW(run_with_activation_token, METH_O),
     MW(change_background_opacity, METH_VARARGS),
     MW(background_opacity_of, METH_O),

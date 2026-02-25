@@ -79,7 +79,7 @@ func process_escape_codes(text string) (ans string, hyperlinks []Mark) {
 			active_hyperlink_url = url
 			active_hyperlink_start_offset = start
 			if metadata != "" {
-				for _, entry := range strings.Split(metadata, ":") {
+				for entry := range strings.SplitSeq(metadata, ":") {
 					if strings.HasPrefix(entry, "id=") && len(entry) > 3 {
 						active_hyperlink_id = entry[3:]
 					}
@@ -375,7 +375,7 @@ func functions_for(opts *Options) (pattern string, post_processors []PostProcess
 		// IPv4 with no validation
 		`((?:\d{1,3}\.){3}\d{1,3}` + "|" +
 			// IPv6 with no validation
-			`(?:[a-fA-F0-9]{0,4}:){2,7}[a-fA-F0-9]{1,4})`)
+			`(?:[a-fA-F0-9]{0,4}:){2,7}[a-fA-F0-9]{0,4})`)
 		post_processors = append(post_processors, PostProcessorMap()["ip"])
 	default:
 		pattern = opts.Regex

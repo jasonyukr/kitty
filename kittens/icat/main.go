@@ -4,6 +4,7 @@ package icat
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -42,6 +43,15 @@ const (
 	supported
 )
 
+type fit_t int
+
+const (
+	fit_none fit_t = iota
+	fit_width
+	fit_height
+	fit_both
+)
+
 var transfer_by_file, transfer_by_memory transfer_mode
 
 var files_channel chan input_arg
@@ -49,6 +59,7 @@ var output_channel chan *image_data
 var num_of_items int
 var keep_going *atomic.Bool
 var screen_size *unix.Winsize
+var fit_mode fit_t
 
 func send_output(imgd *image_data) {
 	output_channel <- imgd
@@ -85,6 +96,22 @@ func parse_z_index() (err error) {
 	}
 	z_index = int32(i) + origin
 	return
+}
+
+func parse_fit() (err error) {
+	switch strings.ToLower(opts.Fit) {
+	case "width":
+		fit_mode = fit_width
+	case "height":
+		fit_mode = fit_height
+	case "none", "neither":
+		fit_mode = fit_none
+	case "both":
+		fit_mode = fit_both
+	default:
+		return fmt.Errorf("unknown fit specification: %#v", opts.Fit)
+	}
+	return nil
 }
 
 func parse_place() (err error) {
@@ -130,8 +157,10 @@ func print_error(format string, args ...any) {
 
 func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 	opts = o
-	err = parse_place()
-	if err != nil {
+	if err = parse_place(); err != nil {
+		return 1, err
+	}
+	if err = parse_fit(); err != nil {
 		return 1, err
 	}
 	err = parse_z_index()
@@ -195,6 +224,20 @@ func main(cmd *cli.Command, o *Options, args []string) (rc int, err error) {
 		return 0, nil
 	}
 	if opts.Clear {
+		cc := &graphics.GraphicsCommand{}
+		cc.SetAction(graphics.GRT_action_delete).SetDelete(graphics.GRT_free_visible)
+		if err = cc.WriteWithPayloadTo(os.Stdout, nil); err != nil {
+			return 1, err
+		}
+	}
+	switch {
+	case opts.ClearAll:
+		cc := &graphics.GraphicsCommand{}
+		cc.SetAction(graphics.GRT_action_delete).SetDelete(graphics.GRT_free_by_range).SetLeftEdge(0).SetTopEdge(math.MaxUint32)
+		if err = cc.WriteWithPayloadTo(os.Stdout, nil); err != nil {
+			return 1, err
+		}
+	case opts.Clear:
 		cc := &graphics.GraphicsCommand{}
 		cc.SetAction(graphics.GRT_action_delete).SetDelete(graphics.GRT_free_visible)
 		if err = cc.WriteWithPayloadTo(os.Stdout, nil); err != nil {

@@ -16,7 +16,8 @@ typedef enum ScrollTypes { SCROLL_LINE = -999999, SCROLL_PAGE, SCROLL_FULL } Scr
 
 typedef struct {
     bool mLNM, mIRM, mDECTCEM, mDECSCNM, mDECOM, mDECAWM, mDECCOLM, mDECARM, mDECCKM, mCOLOR_PREFERENCE_NOTIFICATION,
-         mBRACKETED_PASTE, mFOCUS_TRACKING, mDECSACE, mHANDLE_TERMIOS_SIGNALS, mINBAND_RESIZE_NOTIFICATION;
+         mBRACKETED_PASTE, mFOCUS_TRACKING, mDECSACE, mHANDLE_TERMIOS_SIGNALS, mINBAND_RESIZE_NOTIFICATION,
+         mPASTE_EVENTS;
     MouseTrackingMode mouse_tracking_mode;
     MouseTrackingProtocol mouse_tracking_protocol;
 } ScreenModes;
@@ -247,6 +248,7 @@ void screen_pop_colors(Screen *, unsigned int);
 void screen_report_color_stack(Screen *);
 void screen_handle_kitty_dcs(Screen *, const char *callback_name, PyObject *cmd);
 void set_title(Screen *self, PyObject*);
+void osc_context(Screen *self, PyObject *ctx);
 void desktop_notify(Screen *self, unsigned int, PyObject*);
 void set_icon(Screen *self, PyObject*);
 void set_dynamic_color(Screen *self, unsigned int code, PyObject*);
@@ -289,7 +291,7 @@ bool screen_set_last_visited_prompt(Screen*, index_type);
 bool screen_select_cmd_output(Screen*, index_type);
 void screen_dirty_sprite_positions(Screen *self);
 void screen_rescale_images(Screen *self);
-void screen_report_size(Screen *, unsigned int which);
+void screen_report_size(Screen *, unsigned which, unsigned modifier);
 void screen_manipulate_title_stack(Screen *, unsigned int op, unsigned int which);
 bool screen_is_overlay_active(Screen *self);
 void screen_update_overlay_text(Screen *self, const char *utf8_text);

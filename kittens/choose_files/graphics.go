@@ -210,13 +210,17 @@ func (self *GraphicsHandler) transmit(lp *loop.Loop, img *images.ImageData, m *i
 		default:
 			gc.SetAction(graphics.GRT_action_frame)
 			gc.SetGap(int32(frame.Delay_ms))
+			if frame.Replace {
+				gc.SetCompositionMode(graphics.Overwrite)
+			}
 			if frame.Compose_onto > 0 {
 				gc.SetOverlaidFrame(uint64(frame.Compose_onto))
 			}
 			gc.SetLeftEdge(uint64(frame.Left)).SetTopEdge(uint64(frame.Top))
 		}
 		if cached_data == nil {
-			transmit_by_escape_code(lp, img.Frames[frame_num].Data(), gc)
+			_, _, _, data := img.Frames[frame_num].Data()
+			transmit_by_escape_code(lp, data, gc)
 		} else {
 			path := cached_data[IMAGE_DATA_PREFIX+strconv.Itoa(frame_num)]
 			transmit_by_file(lp, utils.UnsafeStringToBytes(path), gc)
@@ -279,14 +283,14 @@ func (self *GraphicsHandler) RenderImagePreview(h *Handler, p *ImagePreview, x, 
 	}
 	files_supported := self.files_supported.Load()
 
-	if p.img_metadata.Width <= px_width && p.img_metadata.Height <= px_height {
+	if p.custom_metadata.image.Width <= px_width && p.custom_metadata.image.Height <= px_height {
 		if files_supported {
-			self.transmit(h.lp, nil, p.img_metadata, p.cached_data)
+			self.transmit(h.lp, nil, p.custom_metadata.image, p.cached_data)
 		} else {
 			if err = p.ensure_source_image(); err != nil {
 				return
 			}
-			self.transmit(h.lp, p.source_img, p.img_metadata, nil)
+			self.transmit(h.lp, p.source_img, p.custom_metadata.image, nil)
 		}
 		return
 	}

@@ -602,7 +602,10 @@ dispatch_osc(PS *self, uint8_t *buf, size_t limit, bool is_extended_osc) {
         case 666: REPORT_ERROR("Ignoring OSC 666, typically used by VTE terminals for shell integration"); break;
         case 697: REPORT_ERROR("Ignoring OSC 697, typically used by Fig for shell integration"); break;
         case 701: REPORT_ERROR("Ignoring OSC 701, used by mintty for locale"); break;
-        case 3008: REPORT_ERROR("Ignoring OSC 3008, used by systemd for OSC-context"); break;
+        case 3008:
+            START_DISPATCH
+            DISPATCH_OSC(osc_context);
+            END_DISPATCH
         case 7704: REPORT_ERROR("Ignoring OSC 7704, used by mintty for ANSI colors"); break;
         case 7750: REPORT_ERROR("Ignoring OSC 7750, used by mintty for Emoji style"); break;
         case 7770: REPORT_ERROR("Ignoring OSC 7770, used by mintty for font size"); break;
@@ -1283,7 +1286,7 @@ dispatch_csi(PS *self) {
                 case 14:
                 case 16:
                 case 18:
-                    CALL_CSI_HANDLER1(screen_report_size, 0);
+                    CALL_CSI_HANDLER2(screen_report_size, 0, 0);
                     break;
                 case 22:
                 case 23:

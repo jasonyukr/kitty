@@ -10,7 +10,6 @@ from collections import deque
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import suppress
 from gettext import gettext as _
-from operator import attrgetter
 from typing import (
     Any,
     Deque,
@@ -733,29 +732,40 @@ class Tab:  # {{{
             prev = x
         return prev
 
-    def remove_window(self, window: Window, destroy: bool = True) -> None:
+    def remove_window(self, window: Window, destroy: bool = True, do_post_removal_update: bool = True) -> None:
         self.windows.remove_window(window)
         if destroy:
             remove_window(self.os_window_id, self.id, window.id)
         else:
             detach_window(self.os_window_id, self.id, window.id)
+        if do_post_removal_update:
+            self.post_window_removal_update()
+
+    def post_window_removal_update(self) -> None:
         self.mark_tab_bar_dirty()
         self.relayout()
         active_window = self.active_window
         if active_window:
             self.title_changed(active_window)
+        set_active_window(self.os_window_id, self.id, active_window.id if active_window else 0)
 
     def detach_window(self, window: Window) -> tuple[Window, ...]:
         windows = list(self.windows.windows_in_group_of(window))
-        windows.sort(key=attrgetter('id'))  # since ids increase in order of creation
         for w in reversed(windows):
-            self.remove_window(w, destroy=False)
+            self.remove_window(w, destroy=False, do_post_removal_update=False)
+        self.post_window_removal_update()
         return tuple(windows)
 
-    def attach_window(self, window: Window) -> None:
+    def attach_window(self, window: Window, overlay_for: int | None = None) -> None:
         window.change_tab(self)
         attach_window(self.os_window_id, self.id, window.id)
-        self._add_window(window)
+        self._add_window(window, overlay_for=overlay_for)
+
+    def attach_windows(self, windows: Iterable[Window]) -> None:
+        overlay_for: int | None = None
+        for window in windows:
+            self.attach_window(window, overlay_for)
+            overlay_for = window.id
 
     def set_active_window(self, x: Window | int, for_keep_focus: Window | None = None) -> None:
         self.windows.set_active_window_group_for(x, for_keep_focus=for_keep_focus)
@@ -943,12 +953,15 @@ class Tab:  # {{{
 
     def list_windows(self, self_window: Window | None = None, window_filter: Callable[[Window], bool] | None = None) -> Generator[WindowDict, None, None]:
         active_window = self.active_window
+        cl = self.current_layout
         for w in self:
             if window_filter is None or window_filter(w):
                 yield w.as_dict(
                     is_active=w is active_window,
                     is_focused=w.os_window_id == current_focused_os_window_id() and w is active_window,
-                    is_self=w is self_window)
+                    is_self=w is self_window,
+                    neighbors_map=cl.neighbors_for_window(w, self.windows)
+                )
 
     def list_groups(self) -> list[dict[str, Any]]:
         return [g.as_simple_dict() for g in self.windows.groups]
@@ -1125,7 +1138,14 @@ class TabManager:  # {{{
 
     @property
     def tab_bar_should_be_visible(self) -> bool:
-        return len(self.tabs) >= get_options().tab_bar_min_tabs
+        count = get_options().tab_bar_min_tabs
+        if count < 1:
+            return True
+        for t in self.tabs_to_be_shown_in_tab_bar:
+            count -= 1
+            if count < 1:
+                return True
+        return count < 1
 
     def _add_tab(self, tab: Tab) -> None:
         visible_before = self.tab_bar_should_be_visible
@@ -1147,9 +1167,14 @@ class TabManager:  # {{{
             self._active_tab_idx = idx
         set_active_tab(self.os_window_id, idx)
 
+    def layout_tab_bar(self) -> None:
+        # set tab_bar_should_be_visible so that tab_bar.layout() gets correct dimensions
+        self.mark_tab_bar_dirty()
+        self.tab_bar.layout()
+
     def tabbar_visibility_changed(self) -> None:
         if not self.tab_bar_hidden:
-            self.tab_bar.layout()
+            self.layout_tab_bar()
             self.resize(only_tabs=True)
 
     @property
@@ -1160,8 +1185,8 @@ class TabManager:  # {{{
         return None
 
     def mark_tab_bar_dirty(self) -> None:
-        if self.tab_bar_should_be_visible and not self.tab_bar_hidden:
-            mark_tab_bar_dirty(self.os_window_id)
+        should_be_shown = self.tab_bar_should_be_visible and not self.tab_bar_hidden
+        mark_tab_bar_dirty(self.os_window_id, should_be_shown)
         w = self.active_window or self.any_window
         if w is not None:
             data = {'tab_manager': self}
@@ -1180,8 +1205,7 @@ class TabManager:  # {{{
     def resize(self, only_tabs: bool = False) -> None:
         if not only_tabs:
             if not self.tab_bar_hidden:
-                self.tab_bar.layout()
-                self.mark_tab_bar_dirty()
+                self.layout_tab_bar()
         for tab in self.tabs:
             tab.relayout()
 
@@ -1204,15 +1228,12 @@ class TabManager:  # {{{
             h.pop()
         return True
 
-    def filtered_tabs(self, filter_expression: str) -> Iterator[Tab]:
-        yield from get_boss().match_tabs(filter_expression, all_tabs=self)
-
     @property
     def tabs_to_be_shown_in_tab_bar(self) -> Iterable[Tab]:
         f = get_options().tab_bar_filter
         if f:
             at = self.active_tab
-            m = set(self.filtered_tabs(f))
+            m = set(get_boss().match_tabs(f, all_tabs=self))
             return (t for t in self if t is at or t in m)
         return self.tabs
 
@@ -1442,11 +1463,15 @@ class TabManager:  # {{{
                             if next_active_tab not in tabs:
                                 next_active_tab = None
                     case 'left':
-                        next_active_tab = tabs[(tabs.index(active_tab_before_removal) - 1 + len(tabs)) % len(tabs)]
-                        remove_from_end_of_active_history(next_active_tab)
+                        tab_id = tabs.index(active_tab_before_removal)
+                        if tab_id > 0:
+                            next_active_tab = tabs[tab_id - 1]
+                            remove_from_end_of_active_history(next_active_tab)
                     case 'right':
-                        next_active_tab = tabs[(tabs.index(active_tab_before_removal) + 1) % len(tabs)]
-                        remove_from_end_of_active_history(next_active_tab)
+                        tab_id = tabs.index(active_tab_before_removal)
+                        if tab_id < len(tabs) - 1:
+                            next_active_tab = tabs[tab_id + 1]
+                            remove_from_end_of_active_history(next_active_tab)
                     case 'last':
                         next_active_tab = tabs[-1]
                         remove_from_end_of_active_history(next_active_tab)
@@ -1544,6 +1569,5 @@ class TabManager:  # {{{
         self.tab_bar_hidden = get_options().tab_bar_style == 'hidden'
         self.tab_bar.apply_options()
         self.update_tab_bar_data()
-        self.mark_tab_bar_dirty()
-        self.tab_bar.layout()
+        self.layout_tab_bar()
 # }}}

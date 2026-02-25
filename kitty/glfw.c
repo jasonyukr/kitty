@@ -1587,16 +1587,14 @@ cocoa_focus_last_window(id_type source_window_id, size_t *source_workspaces, siz
         OSWindow *w = global_state.os_windows + i;
         if (
                 w->id != source_window_id && w->handle && w->shown_once &&
-                w->last_focused_counter >= highest_focus_number &&
+                w->last_focused_counter >= highest_focus_number && !glfwGetWindowAttrib(w->handle, GLFW_ICONIFIED) &&
                 (!source_workspace_count || window_in_same_cocoa_workspace(glfwGetCocoaWindow(w->handle), source_workspaces, source_workspace_count))
         ) {
             highest_focus_number = w->last_focused_counter;
             window_to_focus = w;
         }
     }
-    if (window_to_focus) {
-        glfwFocusWindow(window_to_focus->handle);
-    }
+    if (window_to_focus) glfwFocusWindow(window_to_focus->handle);
 }
 #endif
 
@@ -1668,7 +1666,7 @@ dbus_set_notification_callback(PyObject *self UNUSED, PyObject *callback) {
 #define send_dbus_notification_event_to_python(event_type, a, b) { \
     if (dbus_notification_callback) { \
         const char call_args_fmt[] = {'s', \
-            _Generic((a), unsigned long : 'k', unsigned long long : 'K'), _Generic((b), unsigned long : 'k', const char* : 's') }; \
+            _Generic((a), unsigned long : 'k', unsigned long long : 'K'), _Generic((b), unsigned long : 'k', const char* : 's'), '\0' }; \
         RAII_PyObject(ret, PyObject_CallFunction(dbus_notification_callback, call_args_fmt, event_type, a, b)); \
         if (!ret) PyErr_Print(); \
     } \
@@ -1922,9 +1920,11 @@ toggle_secure_input(PYNOARG) {
 }
 
 static PyObject*
-macos_cycle_through_os_windows(PYNOARG) {
+macos_cycle_through_os_windows(PyObject *self UNUSED, PyObject *backwards) {
 #ifdef __APPLE__
-    cocoa_cycle_through_os_windows();
+    glfwCocoaCycleThroughOSWindows(PyObject_IsTrue(backwards));
+#else
+    (void)backwards;
 #endif
     Py_RETURN_NONE;
 }
@@ -2616,7 +2616,7 @@ static PyMethodDef module_methods[] = {
     METHODB(set_clipboard_data_types, METH_VARARGS),
     METHODB(get_clipboard_mime, METH_VARARGS),
     METHODB(toggle_secure_input, METH_NOARGS),
-    METHODB(macos_cycle_through_os_windows, METH_NOARGS),
+    METHODB(macos_cycle_through_os_windows, METH_O),
     METHODB(get_content_scale_for_window, METH_NOARGS),
     METHODB(ring_bell, METH_VARARGS),
     METHODB(toggle_fullscreen, METH_VARARGS),

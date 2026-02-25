@@ -210,9 +210,8 @@ screen_reset(Screen *self) {
     self->is_dirty = true;
     clear_all_selections(self);
     screen_cursor_position(self, 1, 1);
-    set_dynamic_color(self, 110, NULL);
-    set_dynamic_color(self, 111, NULL);
-    set_color_table_color(self, 104, NULL);
+    set_dynamic_color(self, 111, NULL);  // does default_bg_changed processing
+    colorprofile_reset(self->color_profile);
     CALLBACK("on_reset", NULL)
 }
 
@@ -249,10 +248,9 @@ rewrap(Screen *screen, unsigned int lines, unsigned int columns, index_type *ncl
     cursors[0] = (TrackCursor){.x=alt_saved_cursor->before.x, .y=alt_saved_cursor->before.y};
     if (!main_is_active) cursors[1] = (TrackCursor){.x=cursor->before.x, .y=cursor->before.y};
     else cursors[1].is_sentinel = true;
-    ResizeResult ar = resize_screen_buffers(screen->alt_linebuf, NULL, lines, columns, &screen->as_ansi_buf, cursors);
+    ResizeResult ar = resize_screen_buffer_without_rewrap(screen->alt_linebuf, lines, columns, cursors);
     if (!ar.ok) {
-        Py_DecRef((PyObject*)mr.lb); Py_DecRef((PyObject*)mr.hb);
-        PyErr_NoMemory(); return false;
+        Py_DecRef((PyObject*)ar.lb); PyErr_NoMemory(); return false;
     }
     alt_saved_cursor->temp.x = cursors[0].dest_x; alt_saved_cursor->temp.y = cursors[0].dest_y;
     if (!main_is_active) { cursor->temp.x = cursors[1].dest_x; cursor->temp.y = cursors[1].dest_y; }
@@ -1576,6 +1574,7 @@ set_mode_from_const(Screen *self, unsigned int mode, bool val) {
     bool private;
     switch(mode) {
         SIMPLE_MODE(LNM)
+        SIMPLE_MODE(PASTE_EVENTS)
         SIMPLE_MODE(IRM)
         SIMPLE_MODE(DECARM)
         SIMPLE_MODE(BRACKETED_PASTE)
@@ -2182,6 +2181,7 @@ copy_specific_mode(Screen *self, unsigned int mode, const ScreenModes *src, Scre
         SIMPLE_MODE(BRACKETED_PASTE)
         SIMPLE_MODE(FOCUS_TRACKING)
         SIMPLE_MODE(COLOR_PREFERENCE_NOTIFICATION)
+        SIMPLE_MODE(PASTE_EVENTS)
         SIMPLE_MODE(INBAND_RESIZE_NOTIFICATION)
         SIMPLE_MODE(DECCKM)
         SIMPLE_MODE(DECTCEM)
@@ -2225,6 +2225,7 @@ copy_specific_modes(Screen *self, const ScreenModes *src, ScreenModes *dest) {
     copy_specific_mode(self, FOCUS_TRACKING, src, dest);
     copy_specific_mode(self, COLOR_PREFERENCE_NOTIFICATION, src, dest);
     copy_specific_mode(self, INBAND_RESIZE_NOTIFICATION, src, dest);
+    copy_specific_mode(self, PASTE_EVENTS, src, dest);
     copy_specific_mode(self, DECCKM, src, dest);
     copy_specific_mode(self, DECTCEM, src, dest);
     copy_specific_mode(self, DECAWM, src, dest);
@@ -2711,15 +2712,21 @@ screen_xtversion(Screen *self, unsigned int mode) {
 }
 
 void
-screen_report_size(Screen *self, unsigned int which) {
+screen_report_size(Screen *self, unsigned which, unsigned modifier) {
     char buf[32] = {0};
-    unsigned int code = 0;
-    unsigned int width = 0, height = 0;
+    unsigned code = 0, width = 0, height = 0;
     switch(which) {
         case 14:
             code = 4;
             width = self->cell_size.width * self->columns;
             height = self->cell_size.height * self->lines;
+            if (modifier == 2 && self->window_id) {
+                OSWindow *osw = os_window_for_kitty_window(self->window_id);
+                if (osw) {
+                    int w, h, fw, fh; get_os_window_size(osw, &w, &h, &fw, &fh);
+                    width = fw; height = fh;
+                }
+            }
             break;
         case 16:
             code = 6;
@@ -2795,6 +2802,7 @@ report_mode_status(Screen *self, unsigned int which, bool private) {
         KNOWN_MODE(FOCUS_TRACKING);
         KNOWN_MODE(COLOR_PREFERENCE_NOTIFICATION);
         KNOWN_MODE(INBAND_RESIZE_NOTIFICATION);
+        KNOWN_MODE(PASTE_EVENTS);
 #undef KNOWN_MODE
         case ALTERNATE_SCREEN:
             ans = self->linebuf == self->alt_linebuf ? 1 : 2; break;
@@ -3003,6 +3011,11 @@ screen_multi_cursor(Screen *self, int queried_shape, int *params, unsigned num_p
 void
 set_title(Screen *self, PyObject *title) {
     CALLBACK("title_changed", "O", title);
+}
+
+void
+osc_context(Screen *self, PyObject *ctx) {
+    CALLBACK("osc_context", "O", ctx);
 }
 
 void
@@ -3997,7 +4010,7 @@ extend_url(Screen *screen, Line *line, index_type *x, index_type *y, char_type s
     unsigned int count = 0;
     bool has_newline = false;
     index_type orig_y = *y;
-    while (count++ < 10) {
+    while (count++ < 20) {
         bool in_hostname = last_hostname_char_pos >= line->xnum;
         has_newline = !line->cpu_cells[line->xnum-1].next_char_was_wrapped;
         if (next_char_pos(line, *x, 1) < line->xnum || (!newlines_allowed && has_newline)) break;
@@ -4686,6 +4699,7 @@ MODE_GETSET(in_bracketed_paste_mode, BRACKETED_PASTE)
 MODE_GETSET(focus_tracking_enabled, FOCUS_TRACKING)
 MODE_GETSET(color_preference_notification, COLOR_PREFERENCE_NOTIFICATION)
 MODE_GETSET(in_band_resize_notification, INBAND_RESIZE_NOTIFICATION)
+MODE_GETSET(paste_events, PASTE_EVENTS)
 MODE_GETSET(auto_repeat_enabled, DECARM)
 MODE_GETSET(cursor_visible, DECTCEM)
 MODE_GETSET(cursor_key_mode, DECCKM)
@@ -5865,6 +5879,7 @@ static PyGetSetDef getsetters[] = {
     GETSET(auto_repeat_enabled)
     GETSET(focus_tracking_enabled)
     GETSET(in_band_resize_notification)
+    GETSET(paste_events)
     GETSET(cursor_visible)
     GETSET(cursor_key_mode)
     GETSET(disable_ligatures)

@@ -10,19 +10,17 @@ from enum import Enum, auto
 from functools import lru_cache
 from typing import Any, Iterator, NamedTuple, Sequence
 
-try:
-    from kitty.constants import appname, is_macos
-except ImportError:
+if getattr(sys, 'running_from_setup', False):
     is_macos = 'darwin' in sys.platform.lower()
-try:
-    from kitty.utils import shlex_split as ksplit
-    def shlex_split(text: str) -> Iterator[str]:
-        yield from ksplit(text)
-except ImportError:
     from shlex import split as psplit
 
     def shlex_split(text: str) -> Iterator[str]:
         yield from psplit(text)
+else:
+    from kitty.constants import appname, is_macos
+    from kitty.utils import shlex_split as ksplit
+    def shlex_split(text: str) -> Iterator[str]:
+        yield from ksplit(text)
 
 
 def serialize_as_go_string(x: str) -> str:
@@ -387,7 +385,7 @@ system-wide defaults for all users. You can use either :code:`-` or
 
 def kitty_options_spec() -> str:
     if not hasattr(kitty_options_spec, 'ans'):
-        OPTIONS = '''
+        OPTIONS = """
 --class --app-id
 dest=cls
 default={appname}
@@ -484,7 +482,10 @@ without an actual window, use :option:`{appname} --start-as`=hidden.
 type=choices
 default=normal
 choices=normal,fullscreen,maximized,minimized,hidden
-Control how the initial kitty window is created.
+Control how the initial kitty OS window is created. Note that
+this is applies to all OS Windows if you use the :option:`{appname} --session`
+option to create multiple OS Windows. Any OS Windows state
+specified in the session file gets overriden.
 
 
 --position
@@ -552,7 +553,7 @@ This option is deprecated in favor of the :opt:`watcher` option in
 --execute -e
 type=bool-set
 !
-'''
+"""
         setattr(kitty_options_spec, 'ans', OPTIONS.format(
             appname=appname, conf_name=appname, listen_on_defn=listen_on_defn,
             grab_keyboard_docs=grab_keyboard_docs, wait_for_single_instance_defn=wait_for_single_instance_defn,
