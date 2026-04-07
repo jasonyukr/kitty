@@ -46,9 +46,14 @@ chosen in a command line, use, for example::
 
     some-command $(kitten choose-file)
 
-Note, that the above may not work in a complicated pipeline as it performs
+Note that the above may not work in a complicated pipeline as it performs
 terminal I/O and needs exclusive access to the tty device while choosing a
 file.
+
+.. note:: For content previews, this kitten uses some external programs. In
+   particular `ffmpeg <https://www.ffmpeg.org/>`__ is needed for video
+   previews and `calibre <https://calibre-ebook.com>`__ is needed
+   for ebook metadata and cover preiews.
 
 Creating shortcuts to favorite/frequently used directories
 ------------------------------------------------------------
@@ -99,7 +104,9 @@ This kitten can also be used to select non-existent files, that is a new file
 for a :guilabel:`Save file` type of dialog using :option:`--mode <kitty +kitten
 choose_files --mode>`:code:`=save-file`. Once you have changed to the directory
 you want the file to be in (using the :kbd:`Tab` key),
-press :kbd:`Ctrl+Enter` and you will be able to type in the file name.
+press :kbd:`Ctrl+Enter` and you will be able to type in the file name. If you
+wish to modify an existing file name use :kbd:`Alt+Enter` to modify the
+filename of the current top match instead.
 
 
 Selecting directories

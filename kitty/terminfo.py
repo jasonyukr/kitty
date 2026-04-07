@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
+import os
 import re
 from binascii import hexlify, unhexlify
 from collections.abc import Generator
@@ -111,6 +112,7 @@ string_capabilities = {
     'bel': r'^G',
     # Escape code for bold
     'bold': r'\E[1m',
+    'blink': r'\E[5m',
     # Back tab
     'cbt': r'\E[Z',
     'kcbt': r'\E[Z',
@@ -231,7 +233,7 @@ string_capabilities = {
     # Set foreground color
     'setaf': r'\E[%?%p1%{8}%<%t3%p1%d%e%p1%{16}%<%t9%p1%{8}%-%d%e38;5;%p1%d%;m',
     # Set attributes
-    'sgr': r'%?%p9%t\E(0%e\E(B%;\E[0%?%p6%t;1%;%?%p2%t;4%;%?%p1%p3%|%t;7%;%?%p4%t;5%;%?%p7%t;8%;m',
+    'sgr': r'%?%p9%t\E(0%e\E(B%;\E[0%?%p6%t;1%;%?%p2%t;4%;%?%p1%p3%|%t;7%;%?%p4%t;5%;%?%p7%t;8%;%?%p5%t;2%;m',
     # Clear all attributes
     'sgr0': r'\E(B\E[m',
     # Reset color pair to its original value
@@ -270,12 +272,12 @@ string_capabilities = {
     'smacs': r'\E(0',
     'rmacs': r'\E(B',
     # Special keys
-    'khlp': r'',
-    'kund': r'',
-    'ka1': r'',
-    'ka3': r'',
-    'kc1': r'',
-    'kc3': r'',
+    # 'khlp': r'',
+    # 'kund': r'',
+    # 'ka1': r'',
+    # 'ka3': r'',
+    # 'kc1': r'',
+    # 'kc3': r'',
     # Set RGB foreground color (non-standard used by neovim)
     'setrgbf': r'\E[38:2:%p1%d:%p2%d:%p3%dm',
     # Set RGB background color (non-standard used by neovim)
@@ -366,6 +368,7 @@ termcap_aliases.update({
     'ac': 'acsc',
     'bl': 'bel',
     'md': 'bold',
+    'mb': 'blink',
     'bt': 'cbt',
     'kB': 'kcbt',
     'cl': 'clear',
@@ -548,6 +551,9 @@ def get_capabilities(query_string: str, opts: 'Options', window_id: int = 0, os_
                 yield result(encoded_query_name)
             else:
                 yield result(encoded_query_name, rval)
+        elif name in ('query-os-name', 'query-os_name'):
+            # https://github.com/kovidgoyal/kitty/issues/9217
+            yield result(encoded_query_name, os.uname().sysname)
         else:
             if name in bool_capabilities:
                 yield result(encoded_query_name, True)

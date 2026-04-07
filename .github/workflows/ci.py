@@ -4,7 +4,7 @@
 
 import glob
 import io
-import json
+import lzma
 import os
 import shlex
 import shutil
@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.request import Request
+from urllib.request import Request, urlopen
 
 BUNDLE_URL = 'https://download.calibre-ebook.com/ci/kitty/{}-64.tar.xz'
 FONTS_URL = 'https://download.calibre-ebook.com/ci/fonts.tar.xz'
@@ -64,14 +64,15 @@ def run(*a: str, print_crash_reports: bool = False) -> None:
 
 
 def download_with_retry(url: str | Request, count: int = 5) -> bytes:
-    from urllib.request import urlopen
     for i in range(count):
         try:
-            print('Downloading', url, flush=True)
+            print('Downloading', getattr(url, 'full_url', url), flush=True)
             with urlopen(url) as f:
                 ans: bytes = f.read()
             return ans
         except Exception as err:
+            if getattr(err, 'code', -1) == 403:
+                raise
             if i >= count - 1:
                 raise
             print(f'Download failed with error {err} retrying...', file=sys.stderr)
@@ -195,23 +196,12 @@ def install_bundle(dest: str = '', which: str = '') -> None:
     os.chdir(cwd)
 
 
-def install_grype() -> str:
-    dest = '/tmp'
-    rq = Request('https://api.github.com/repos/anchore/grype/releases/latest', headers={
-        'Accept': 'application/vnd.github.v3+json',
-    })
-    m = json.loads(download_with_retry(rq))
-    for asset in m['assets']:
-        if asset['name'].endswith('_linux_amd64.tar.gz'):
-            url = asset['browser_download_url']
-            break
-    else:
-        raise ValueError('Could not find linux binary for grype')
-    os.makedirs(dest, exist_ok=True)
-    data = download_with_retry(url)
-    with tarfile.open(fileobj=io.BytesIO(data), mode='r') as tf:
-        tf.extract('grype', path=dest, filter='fully_trusted')
-    exe = os.path.join(dest, 'grype')
+def install_grype(exe: str = '/tmp/grype') -> str:
+    raw = download_with_retry('https://download.calibre-ebook.com/ci/grype.xz')
+    raw = lzma.decompress(raw)
+    with open(exe, 'wb') as f:
+        f.write(raw)
+        os.fchmod(f.fileno(), 0o755)
     subprocess.check_call([exe, 'db', 'update'])
     return exe
 
@@ -221,11 +211,25 @@ IGNORED_DEPENDENCY_CVES = [
     'CVE-2025-8194', # DoS in tarfile
     'CVE-2025-6069', # DoS in HTMLParser
     'CVE-2025-13836', # DoS in http client reading from malicious server
-    'CVE-2025-12084',  # DoS in xml.dom.minidom unused in kitty
-    # glib
-    'CVE-2025-4056', # Only affects Windows, on which we dont run
+    'CVE-2025-12084', # DoS in xml.dom.minidom unused in kitty
+    'CVE-2025-13837', # DoS in plistlib reading plist. We only use plistlib for writing
+    'CVE-2025-6075',  # Quadratic complexity in os.path.expandvars()
+    # python stdlib all these are erroneously marked as fixed in python 3.15
+    # when it hasnt even been released. Sigh.
+    'CVE-2026-1299',
+    'CVE-2026-0865',
+    'CVE-2025-15282',
+    'CVE-2026-0672',
+    'CVE-2025-15366',
+    'CVE-2025-15367',
+    'CVE-2025-12781',
+    'CVE-2025-11468',
+    'CVE-2026-2297',
+    'CVE-2026-3644',
+    'CVE-2026-4224',
     # github.com/nwaples/rardecode/v2
     'CVE-2025-11579', # rardecode is version 2.2.1, not vulnerable
+    'CVE-2026-2673',  # openssl fix not released
 ]
 
 
@@ -247,7 +251,7 @@ def check_dependencies() -> None:
     # Now test against the SBOM
     import runpy
     orig = sys.argv, sys.stdout
-    sys.argv = ['bypy', 'sbom', 'myproject', '1.0.0']
+    sys.argv = ['bypy', 'sbom', 'kovidgoyal/kitty', '1.0.0']
     buf = io.StringIO()
     sys.stdout = buf
     runpy.run_path('bypy-src')

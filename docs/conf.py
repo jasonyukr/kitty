@@ -18,8 +18,9 @@ from typing import Any, Callable, Dict, Iterable, Iterator, List, Tuple
 
 from docutils import nodes
 from docutils.parsers.rst.roles import set_classes
-from pygments.lexer import RegexLexer, bygroups  # type: ignore
-from pygments.token import Comment, Error, Keyword, Literal, Name, Number, String, Whitespace  # type: ignore
+from pygments.lexer import RegexLexer
+from pygments.lexer import bygroups as untyped_bygroups
+from pygments.token import Comment, Error, Keyword, Literal, Name, Number, String, Whitespace
 from sphinx import addnodes, version_info
 from sphinx.util.logging import getLogger
 
@@ -300,7 +301,7 @@ if you specify a program-to-run you can use the special placeholder
 
 
 def write_color_names_table() -> None: # {{{
-    from kitty.rgb import color_names
+    from kitty.fast_data_types import all_color_names
     def s(c: Any) -> str:
         return f'{c.red:02x}/{c.green:02x}/{c.blue:02x}'
     with open('generated/color-names.rst', 'w') as f:
@@ -308,7 +309,7 @@ def write_color_names_table() -> None: # {{{
         p('=' * 50, '=' * 20)
         p('Name'.ljust(50), 'RGB value')
         p('=' * 50, '=' * 20)
-        for name, col in color_names.items():
+        for name, col in all_color_names():
             p(name.ljust(50), s(col))
         p('=' * 50, '=' * 20)
 # }}}
@@ -367,41 +368,45 @@ def replace_string(app: Any, docname: str, source: List[str]) -> None:  # {{{
 # config file docs {{{
 
 
-class ConfLexer(RegexLexer):  # type: ignore
+def bygroups(*args: Any) -> Any:
+    return untyped_bygroups(*args)  # type: ignore[no-untyped-call]
+
+
+class ConfLexer(RegexLexer):
     name = 'Conf'
     aliases = ['conf']
     filenames = ['*.conf']
 
     def map_flags(self: RegexLexer, val: str, start_pos: int) -> Iterator[Tuple[int, Any, str]]:
-            expecting_arg = ''
-            s = Shlex(val)
-            from kitty.options.utils import allowed_key_map_options
-            last_pos = 0
-            while (tok := s.next_word())[0] > -1:
-                x = tok[1]
-                if tok[0] > last_pos:
-                    yield start_pos + last_pos, Whitespace, ' ' * (tok[0] - last_pos)
-                last_pos = tok[0] + len(x)
-                tok_start = start_pos + tok[0]
-                if expecting_arg:
-                    yield tok_start, String, x
+        expecting_arg = ''
+        s = Shlex(val)
+        from kitty.options.utils import allowed_key_map_options
+        last_pos = 0
+        while (tok := s.next_word())[0] > -1:
+            x = tok[1]
+            if tok[0] > last_pos:
+                yield start_pos + last_pos, Whitespace, ' ' * (tok[0] - last_pos)
+            last_pos = tok[0] + len(x)
+            tok_start = start_pos + tok[0]
+            if expecting_arg:
+                yield tok_start, String, x
+                expecting_arg = ''
+            elif x.startswith('--'):
+                expecting_arg = x[2:]
+                k, sep, v = expecting_arg.partition('=')
+                k = k.replace('-', '_')
+                expecting_arg = k
+                if expecting_arg not in allowed_key_map_options:
+                    yield tok_start, Error, x
+                elif sep == '=':
                     expecting_arg = ''
-                elif x.startswith('--'):
-                    expecting_arg = x[2:]
-                    k, sep, v = expecting_arg.partition('=')
-                    k = k.replace('-', '_')
-                    expecting_arg = k
-                    if expecting_arg not in allowed_key_map_options:
-                        yield tok_start, Error, x
-                    elif sep == '=':
-                        expecting_arg = ''
-                        yield tok_start, Name, x
-                    else:
-                        yield tok_start, Name, x
+                    yield tok_start, Name, x
                 else:
-                    break
+                    yield tok_start, Name, x
+            else:
+                break
 
-    def mapargs(self: RegexLexer, match: 're.Match[str]') -> Iterator[Tuple[int, Any, str]]:
+    def mapargs(self: 'ConfLexer', match: 're.Match[str]') -> Iterator[Tuple[int, Any, str]]:
         start_pos = match.start()
         val = match.group()
         parts = val.split(maxsplit=1)
@@ -465,7 +470,7 @@ class ConfLexer(RegexLexer):  # type: ignore
     }
 
 
-class SessionLexer(RegexLexer):  # type: ignore
+class SessionLexer(RegexLexer):
     name = 'Session'
     aliases = ['session']
     filenames = ['*.session']

@@ -548,7 +548,7 @@ screen_resize(Screen *self, unsigned int lines, unsigned int columns) {
     which.is_beyond_content = num_content_lines_before > 0 && self->cursor->y >= num_content_lines_before; \
     which.num_content_lines = num_content_lines_after; \
 }
-    // Resize overlay line
+    // Resize overlay and blank lines
     if (!init_overlay_line(self, columns, true)) return false;
 
     // Resize main linebuf
@@ -1482,6 +1482,10 @@ cursor_within_margins(Screen *self) {
     return self->margin_top <= self->cursor->y && self->cursor->y <= self->margin_bottom;
 }
 
+static inline void
+reset_pixel_scroll(Screen *self, unsigned val) { self->pixel_scroll_offset_y = val; }
+
+
 // Remove all cell images from a portion of the screen and mark lines that
 // contain image placeholders as dirty to make sure they are redrawn. This is
 // needed when we perform commands that may move some lines without marking them
@@ -1528,6 +1532,7 @@ void
 screen_toggle_screen_buffer(Screen *self, bool save_cursor, bool clear_alt_screen) {
     bool to_alt = self->linebuf == self->main_linebuf;
     self->active_hyperlink_id = 0;
+    reset_pixel_scroll(self, 0);
     if (to_alt) {
         if (clear_alt_screen) {
             linebuf_clear(self->alt_linebuf, BLANK_CHAR);
@@ -2313,7 +2318,8 @@ screen_cursor_at_a_shell_prompt(const Screen *self) {
 }
 
 bool
-screen_prompt_supports_click_events(const Screen *self) {
+screen_prompt_supports_click_events(const Screen *self, bool *is_relative) {
+    *is_relative = (bool) self->prompt_settings.relative_click_events;
     return (bool) self->prompt_settings.supports_click_events;
 }
 
@@ -2423,6 +2429,7 @@ dirty_scroll(Screen *self) {
 static void
 screen_clear_scrollback(Screen *self) {
     historybuf_clear(self->historybuf);
+    reset_pixel_scroll(self, 0);
     if (self->scrolled_by != 0) {
         self->scrolled_by = 0;
         dirty_scroll(self);
@@ -3059,7 +3066,13 @@ parse_prompt_mark(Screen *self, char *buf, PromptKind *pk) {
         if (strcmp(token, "k=s") == 0) *pk = SECONDARY_PROMPT;
         else if (strcmp(token, "redraw=0") == 0) self->prompt_settings.redraws_prompts_at_all = 0;
         else if (strcmp(token, "special_key=1") == 0) self->prompt_settings.uses_special_keys_for_cursor_movement = 1;
-        else if (strcmp(token, "click_events=1") == 0) self->prompt_settings.supports_click_events = 1;
+        else if (strcmp(token, "click_events=1") == 0) {
+            self->prompt_settings.supports_click_events = 1;
+            self->prompt_settings.relative_click_events = 0;
+        } else if (strcmp(token, "click_events=2") == 0) {
+            self->prompt_settings.supports_click_events = 1;
+            self->prompt_settings.relative_click_events = 1;
+        }
     }
 }
 
@@ -3120,7 +3133,10 @@ screen_history_scroll_to_prompt(Screen *self, int num_of_prompts_to_jump, int sc
         self->scrolled_by = y >= 0 ? 0 : -y;
         screen_set_last_visited_prompt(self, 0);
     }
-    if (old != self->scrolled_by) dirty_scroll(self);
+    if (old != self->scrolled_by) {
+        reset_pixel_scroll(self, 0);
+        dirty_scroll(self);
+    }
     return old != self->scrolled_by;
 }
 
@@ -3347,6 +3363,37 @@ update_line_data(Line *line, unsigned int dest_y, uint8_t *data) {
     memcpy(data + base, line->gpu_cells, line->xnum * sizeof(GPUCell));
 }
 
+static void
+update_line_data_blank(unsigned xnum, unsigned int dest_y, uint8_t *data) {
+    const size_t sz = xnum * sizeof(GPUCell);
+    memset(data + sz * dest_y, 0, sz);
+}
+
+
+static Line*
+render_line_for_virtual_y(Screen *self, int y, Line *line, index_type *lnum, bool *is_history) {
+    if (y < (int)self->scrolled_by) {
+        int idx = (int)self->scrolled_by - 1 - y;
+        if (idx >= 0 && (unsigned)idx < self->historybuf->count) {
+            historybuf_init_line(self->historybuf, idx, line);
+            line->xnum = self->columns;
+            line->ynum = (index_type)MIN(MAX(y, 0), (int)self->lines - 1);
+            *lnum = (index_type)idx;
+            *is_history = true;
+            return line;
+        }
+        return NULL;
+    }
+    y -= self->scrolled_by;
+    if (y >= 0 && y < (int)self->lines) {
+        linebuf_init_line_at(self->linebuf, (index_type)y, line);
+        *lnum = (index_type)y;
+        *is_history = false;
+        return line;
+    }
+    return NULL;
+}
+
 
 static void
 screen_reset_dirty(Screen *self) {
@@ -3466,24 +3513,23 @@ screen_render_line_graphics(Screen *self, Line *line, int32_t row) {
 static void
 screen_update_only_line_graphics_data(Screen *self) {
     unsigned int history_line_added_count = self->history_line_added_count;
-    index_type lnum;
+    index_type lnum = 0;
     if (self->scrolled_by) self->scrolled_by = MIN(self->scrolled_by + history_line_added_count, self->historybuf->count);
     screen_reset_dirty(self);
     self->scroll_changed = false;
-    for (index_type y = 0; y < MIN(self->lines, self->scrolled_by); y++) {
-        lnum = self->scrolled_by - 1 - y;
-        historybuf_init_line(self->historybuf, lnum, self->historybuf->line);
-        screen_render_line_graphics(self, self->historybuf->line, y - self->scrolled_by);
-        if (self->historybuf->line->attrs.has_dirty_text) {
-            historybuf_mark_line_clean(self->historybuf, lnum);
-        }
-    }
-    for (index_type y = self->scrolled_by; y < self->lines; y++) {
-        lnum = y - self->scrolled_by;
-        linebuf_init_line(self->linebuf, lnum);
-        if (self->linebuf->line->attrs.has_dirty_text) {
-            screen_render_line_graphics(self, self->linebuf->line, y - self->scrolled_by);
-            linebuf_mark_line_clean(self->linebuf, lnum);
+    const unsigned int render_lines = render_lines_for_screen(self);
+    const int render_row_offset = pixel_scroll_enabled(self);
+    Line line = {.text_cache = self->text_cache};
+    for (unsigned int render_row = 0; render_row < render_lines; render_row++) {
+        const int virtual_y = (int)render_row - render_row_offset;
+        bool is_history = false;
+        Line *linep = render_line_for_virtual_y(self, virtual_y, &line, &lnum, &is_history);
+        if (linep) {
+            screen_render_line_graphics(self, linep, virtual_y - (int)self->scrolled_by);
+            if (linep->attrs.has_dirty_text) {
+                if (is_history) historybuf_mark_line_clean(self->historybuf, lnum);
+                else linebuf_mark_line_clean(self->linebuf, lnum);
+            }
         }
     }
 }
@@ -3509,37 +3555,44 @@ screen_update_cell_data(Screen *self, void *address, FONTS_DATA_HANDLE fonts_dat
     }
     const bool is_overlay_active = screen_is_overlay_active(self);
     unsigned int history_line_added_count = self->history_line_added_count;
-    index_type lnum;
     screen_reset_dirty(self);
     update_overlay_position(self);
+    const bool force_history_render = pixel_scroll_enabled(self) && self->scroll_changed;
     if (self->scrolled_by) self->scrolled_by = MIN(self->scrolled_by + history_line_added_count, self->historybuf->count);
     self->scroll_changed = false;
-    for (index_type y = 0; y < MIN(self->lines, self->scrolled_by); y++) {
-        lnum = self->scrolled_by - 1 - y;
-        historybuf_init_line(self->historybuf, lnum, self->historybuf->line);
-        // we render line graphics even if the line is not dirty as graphics commands received after
-        // the unicode placeholder was first scanned can alter it.
-        screen_render_line_graphics(self, self->historybuf->line, y - self->scrolled_by);
-        if (self->historybuf->line->attrs.has_dirty_text) {
-            render_line(fonts_data, self->historybuf->line, lnum, self->cursor, self->disable_ligatures, self->lc);
-            if (screen_has_marker(self)) mark_text_in_line(self->marker, self->historybuf->line, &self->as_ansi_buf);
-            historybuf_mark_line_clean(self->historybuf, lnum);
+    const unsigned int render_lines = render_lines_for_screen(self);
+    const int render_row_offset = pixel_scroll_enabled(self);
+    Line line = {.text_cache = self->text_cache};
+    for (unsigned int render_row = 0; render_row < render_lines; render_row++) {
+        const int virtual_y = (int)render_row - render_row_offset;
+        bool is_history = false;
+        index_type lnum = 0;
+        Line *linep = render_line_for_virtual_y(self, virtual_y, &line, &lnum, &is_history);
+        if (linep == NULL) {
+            update_line_data_blank(self->columns, render_row, address);
+            continue;
         }
-        update_line_data(self->historybuf->line, y, address);
-    }
-    for (index_type y = self->scrolled_by; y < self->lines; y++) {
-        lnum = y - self->scrolled_by;
-        linebuf_init_line(self->linebuf, lnum);
-        if (self->linebuf->line->attrs.has_dirty_text ||
-            (cursor_has_moved && (self->cursor->y == lnum || self->last_rendered.cursor.y == lnum))) {
-            render_line(fonts_data, self->linebuf->line, lnum, self->cursor, self->disable_ligatures, self->lc);
-            screen_render_line_graphics(self, self->linebuf->line, y - self->scrolled_by);
-            if (self->linebuf->line->attrs.has_dirty_text && screen_has_marker(self)) mark_text_in_line(
-                    self->marker, self->linebuf->line, &self->as_ansi_buf);
-            if (is_overlay_active && lnum == self->overlay_line.ynum) render_overlay_line(self, self->linebuf->line, fonts_data);
-            linebuf_mark_line_clean(self->linebuf, lnum);
+        if (is_history) {
+            // we render line graphics even if the line is not dirty as graphics commands received after
+            // the unicode placeholder was first scanned can alter it.
+            screen_render_line_graphics(self, linep, virtual_y - (int)self->scrolled_by);
+            if (force_history_render || linep->attrs.has_dirty_text) {
+                render_line(fonts_data, linep, lnum, self->cursor, self->disable_ligatures, self->lc);
+                if (screen_has_marker(self)) mark_text_in_line(self->marker, linep, &self->as_ansi_buf);
+                historybuf_mark_line_clean(self->historybuf, lnum);
+            }
+        } else {
+            if (linep->attrs.has_dirty_text ||
+                (cursor_has_moved && (self->cursor->y == lnum || self->last_rendered.cursor.y == lnum))) {
+                render_line(fonts_data, linep, lnum, self->cursor, self->disable_ligatures, self->lc);
+                screen_render_line_graphics(self, linep, virtual_y - (int)self->scrolled_by);
+                if (linep->attrs.has_dirty_text && screen_has_marker(self)) mark_text_in_line(
+                        self->marker, linep, &self->as_ansi_buf);
+                if (is_overlay_active && lnum == self->overlay_line.ynum) render_overlay_line(self, linep, fonts_data);
+                linebuf_mark_line_clean(self->linebuf, lnum);
+            }
         }
-        update_line_data(self->linebuf->line, y, address);
+        update_line_data(linep, render_row, address);
     }
     if (is_overlay_active && self->overlay_line.ynum + self->scrolled_by < self->lines) {
         if (self->overlay_line.is_dirty) {
@@ -3696,23 +3749,29 @@ iteration_data_is_empty(const Screen *self, const IterationData *idata) {
 }
 
 static void
-apply_selection(Screen *self, uint8_t *data, Selection *s, uint8_t set_mask) {
-    iteration_data(s, &s->last_rendered, self->columns, -self->historybuf->count, self->scrolled_by);
+apply_selection(Screen *self, uint8_t *data, Selection *s, uint8_t set_mask, int extra_leading_rows) {
+    iteration_data(s, &s->last_rendered, self->columns, -self->historybuf->count, 0);
     Line *line;
-    const int y_min = MAX(0, s->last_rendered.y), y_limit = MIN(s->last_rendered.y_limit, (int)self->lines);
+    const int y_min = MAX(-extra_leading_rows - (int)self->scrolled_by, s->last_rendered.y),
+          y_limit = MIN(s->last_rendered.y_limit, (int)self->lines - (int)self->scrolled_by);
     for (int y = y_min; y < y_limit; y++) {
         if (self->paused_rendering.expires_at) {
             linebuf_init_line(self->paused_rendering.linebuf, y);
             line = self->paused_rendering.linebuf->line;
-        } else line = visual_line_(self, y);
-        uint8_t *line_start = data + self->columns * y;
+        } else {
+            line = checked_range_line(self, y);
+            if (!line) continue;
+        }
+        const int y_in_data = (y + extra_leading_rows + self->scrolled_by);
+        uint8_t *line_start = data + self->columns * y_in_data;
         XRange xr = xrange_for_iteration_with_multicells(&s->last_rendered, y, line);
         for (index_type x = xr.x; x < xr.x_limit; x++) {
             line_start[x] |= set_mask;
             CPUCell *c = &line->cpu_cells[x];
             if (c->is_multicell && c->scale > 1) {
-                for (int ym = MAX(0, y - c->y); ym < y; ym++) data[self->columns * ym + x] |= set_mask;
-                for (int ym = y + 1; ym < MIN((int)self->lines, y + c->scale - c->y); ym++) data[self->columns * ym + x] |= set_mask;
+                for (int ym = MAX(0, y_in_data - c->y); ym < y_in_data; ym++) data[self->columns * ym + x] |= set_mask;
+                for (int ym = y_in_data + 1; ym < MIN((int)self->lines + extra_leading_rows, y_in_data + c->scale - c->y); ym++)
+                    data[self->columns * ym + x] |= set_mask;
             }
         }
     }
@@ -3733,22 +3792,24 @@ screen_has_selection(Screen *self) {
 }
 
 void
-screen_apply_selection(Screen *self, void *address, size_t size) {
+screen_apply_selection(Screen *self, void *address_, size_t size) {
+    uint8_t *address = address_;
     memset(address, 0, size);
+    const int offset = pixel_scroll_enabled(self);
     Selections *sel = self->paused_rendering.expires_at ? &self->paused_rendering.selections : &self->selections;
-    for (size_t i = 0; i < sel->count; i++) apply_selection(self, address, sel->items + i, 1);
+    for (size_t i = 0; i < sel->count; i++) apply_selection(self, address, sel->items + i, 1, offset);
     sel->last_rendered_count = sel->count;
     sel = self->paused_rendering.expires_at ? &self->paused_rendering.url_ranges : &self->url_ranges;
     for (size_t i = 0; i < sel->count; i++) {
         Selection *s = sel->items + i;
         if (OPT(underline_hyperlinks) == UNDERLINE_NEVER && s->is_hyperlink) continue;
-        apply_selection(self, address, s, 2);
+        apply_selection(self, address, s, 2, offset);
     }
-    uint8_t *a = address;
     sel->last_rendered_count = sel->count;
+    address += offset * self->columns; size -= offset * self->columns;
     ExtraCursors *ec = self->paused_rendering.expires_at ? &self->paused_rendering.extra_cursors : &self->extra_cursors;
     for (unsigned i = 0; i < ec->count; i++) {
-        if (ec->locations[i].cell < size) a[ec->locations[i].cell] |= (ec->locations[i].shape & 7) << 2;
+        if (ec->locations[i].cell < size) address[ec->locations[i].cell] |= (ec->locations[i].shape & 7) << 2;
     }
     ec->dirty = false;
 }
@@ -3918,7 +3979,7 @@ static hyperlink_id_type
 hyperlink_id_for_range(Screen *self, const Selection *sel) {
     IterationData idata;
     iteration_data(sel, &idata, self->columns, -self->historybuf->count, 0);
-    for (int i = 0, y = idata.y; y < idata.y_limit && y < (int)self->lines; y++, i++) {
+    for (int y = idata.y; y < idata.y_limit && y < (int)self->lines; y++) {
         Line *line = range_line_(self, y);
         XRange xr = xrange_for_iteration(&idata, y, line);
         for (index_type x = xr.x; x < xr.x_limit; x++) {
@@ -4135,6 +4196,7 @@ screen_update_overlay_text(Screen *self, const char *utf8_text) {
     // Since we are typing, scroll to the bottom
     if (self->scrolled_by != 0) {
         self->scrolled_by = 0;
+        reset_pixel_scroll(self, 0);
         dirty_scroll(self);
     }
 }
@@ -4250,7 +4312,8 @@ render_overlay_line(Screen *self, Line *line, FONTS_DATA_HANDLE fonts_data) {
 
 static void
 update_overlay_line_data(Screen *self, uint8_t *data) {
-    const size_t base = sizeof(GPUCell) * (self->overlay_line.ynum + self->scrolled_by) * self->columns;
+    const int render_row_offset = pixel_scroll_enabled(self);
+    const size_t base = sizeof(GPUCell) * (self->overlay_line.ynum + self->scrolled_by + render_row_offset) * self->columns;
     memcpy(data + base, self->overlay_line.gpu_cells, self->columns * sizeof(GPUCell));
 }
 
@@ -4347,7 +4410,7 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
             found_prompt = true;
             // change direction to downwards to find command output
             direction = 1;
-        } else if (line && line->attrs.prompt_kind == OUTPUT_START && !range_line_is_continued(self, y1)) {
+        } else if (line && line->attrs.prompt_kind == OUTPUT_START) {
             found_output = true; start = y1;
             found_prompt = true;
             direction = 1;
@@ -4361,13 +4424,13 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
         // find upwards: find prompt after the output, and the first output
         while (y1 >= upward_limit) {
             line = checked_range_line(self, y1);
-            if (line && line->attrs.prompt_kind == PROMPT_START && !range_line_is_continued(self, y1)) {
+            if (line && line->attrs.prompt_kind == PROMPT_START) {
                 if (direction == 0) {
                     found_prompt = true;
                     break;
                 }
                 found_next_prompt = true; end = y1;
-            } else if (line && line->attrs.prompt_kind == OUTPUT_START && !range_line_is_continued(self, y1)) {
+            } else if (line && line->attrs.prompt_kind == OUTPUT_START) {
                 found_output = true; start = y1;
                 found_prompt = true;
                 break;
@@ -4393,12 +4456,12 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
                         break;
                     }
                     found_prompt = true;
-                } else if (found_prompt && !found_output) {
+                } else if (!found_output) {
                     // skip fetching wrapped prompt lines
                     while (range_line_is_continued(self, y2)) {
                         y2++;
                     }
-                } else if (found_output && !found_next_prompt) {
+                } else if (!found_next_prompt) {
                     found_next_prompt = true; end = y2;
                     break;
                 }
@@ -4476,7 +4539,7 @@ cmd_output(Screen *self, PyObject *args) {
             bool reached_upper_limit = false;
             while (!found && !reached_upper_limit) {
                 line = checked_range_line(self, y);
-                if (!line || (line->attrs.prompt_kind == OUTPUT_START && !range_line_is_continued(self, y))) {
+                if (!line || (line->attrs.prompt_kind == OUTPUT_START)) {
                     int start = line ? y : y + 1; reached_upper_limit = !line;
                     int y2 = start; unsigned int num_lines = 0;
                     bool found_content = false;
@@ -4866,14 +4929,18 @@ cell_is_blank(const CPUCell *c) {
     return !cell_has_text(c) || cell_is_char(c, ' ');
 }
 
-bool
-screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end) {
-    if (y >= self->lines) { return false; }
-    Line *line = visual_line_(self, y);
+static void
+screen_selection_range_for_line_(Line *line, index_type *start, index_type *end) {
     index_type xlimit = line->xnum, xstart = 0;
     while (xlimit > 0 && cell_is_blank(line->cpu_cells + xlimit - 1)) xlimit--;
     while (xstart < xlimit && cell_is_blank(line->cpu_cells + xstart)) xstart++;
     *start = xstart; *end = xlimit > 0 ? xlimit - 1 : 0;
+}
+
+bool
+screen_selection_range_for_line(Screen *self, index_type y, index_type *start, index_type *end) {
+    if (y >= self->lines) { return false; }
+    screen_selection_range_for_line_(visual_line_(self, y), start, end);
     return true;
 }
 
@@ -4938,13 +5005,45 @@ screen_selection_range_for_word(Screen *self, const index_type x, const index_ty
 }
 
 void
-screen_history_scroll_to_absolute(Screen *self, unsigned int target_scrolled_by) {
+screen_history_scroll_to_absolute(Screen *self, double target_scrolled_by) {
     if (self->linebuf != self->main_linebuf) return;
-    if (target_scrolled_by > self->historybuf->count) target_scrolled_by = self->historybuf->count;
-    if (target_scrolled_by != self->scrolled_by) {
-        self->scrolled_by = target_scrolled_by;
+    index_type target_scrolled_by_line = (index_type)target_scrolled_by;
+    unsigned pixel_scroll_offset_y = (unsigned)((target_scrolled_by - target_scrolled_by_line) * self->cell_size.height);
+    if (!OPT(pixel_scroll)) pixel_scroll_offset_y = 0;
+    if (target_scrolled_by_line > self->historybuf->count) target_scrolled_by_line = self->historybuf->count;
+    if (target_scrolled_by_line >= self->historybuf->count) pixel_scroll_offset_y = 0;
+    if (target_scrolled_by_line != self->scrolled_by || self->pixel_scroll_offset_y != pixel_scroll_offset_y) {
+        self->scrolled_by = target_scrolled_by_line;
+        reset_pixel_scroll(self, pixel_scroll_offset_y);
         dirty_scroll(self);
     }
+}
+
+bool
+screen_apply_pixel_scroll(Screen *self, double delta_pixels) {
+    if (!pixel_scroll_enabled(self)) return false;
+    if (!self->historybuf->count) return false;
+    const double cell_height = (double)self->cell_size.height;
+    if (cell_height <= 0.0 || delta_pixels == 0.0) return false;
+
+    double total = self->pixel_scroll_offset_y + (double)self->scrolled_by * cell_height + delta_pixels;
+    const double max_total = (double)self->historybuf->count * cell_height;
+    if (total < 0.0) total = 0.0;
+    if (total > max_total) total = max_total;
+    const unsigned int new_scrolled_by = (unsigned int)floor(total / cell_height);
+    const unsigned offset = (unsigned)(total - (double)new_scrolled_by * cell_height);
+    bool changed = false;
+    if (new_scrolled_by != self->scrolled_by) {
+        self->scrolled_by = new_scrolled_by;
+        changed = true;
+    }
+
+    if (offset != self->pixel_scroll_offset_y) {
+        self->pixel_scroll_offset_y = offset;
+        changed = true;
+    }
+    if (changed) dirty_scroll(self);
+    return changed;
 }
 
 bool
@@ -4967,14 +5066,61 @@ screen_history_scroll(Screen *self, int amt, bool upwards) {
         amt = MIN((unsigned int)amt, self->scrolled_by);
         amt *= -1;
     }
-    if (amt == 0) return false;
     unsigned int new_scroll = MIN(self->scrolled_by + amt, self->historybuf->count);
-    if (new_scroll != self->scrolled_by) {
+    if (new_scroll != self->scrolled_by || (new_scroll == 0 && self->pixel_scroll_offset_y != 0)) {
         self->scrolled_by = new_scroll;
+        reset_pixel_scroll(self, 0);
         dirty_scroll(self);
         return true;
     }
     return false;
+}
+
+static bool
+screen_fractional_scroll(Screen *self, double amt) {
+    if (amt == 0) return false;
+    index_type before_scrolled_by = self->scrolled_by;
+    double before_pixels = self->pixel_scroll_offset_y;
+    double integral_part, fractional_part = modf(amt, &integral_part);
+    int lines = (int)integral_part;
+    int pixels = (int)(fractional_part * self->cell_size.height);
+    if (amt > 0) {  // downwards
+        if (fractional_part != 0) pixels = MAX(1, pixels);
+        if (lines > (int)self->scrolled_by) {
+            self->scrolled_by = 0; self->pixel_scroll_offset_y = 0;
+        } else {
+            self->scrolled_by -= lines;
+            if (pixels <= (int)self->pixel_scroll_offset_y) self->pixel_scroll_offset_y -= pixels;
+            else {
+                self->pixel_scroll_offset_y = 0;
+                if (self->scrolled_by) {
+                    self->scrolled_by--; self->pixel_scroll_offset_y = self->cell_size.height - pixels;
+                }
+            }
+        }
+    } else {
+        if (fractional_part != 0) pixels = MIN(-1, pixels);
+        self->pixel_scroll_offset_y -= pixels;  // pixels is negative
+        if (self->pixel_scroll_offset_y >= self->cell_size.height) {
+            self->pixel_scroll_offset_y = 0; self->scrolled_by++;
+        }
+        self->scrolled_by = MIN(self->scrolled_by - lines, self->historybuf->count);
+        if (self->scrolled_by >= self->historybuf->count) self->pixel_scroll_offset_y = 0;
+    }
+    if (self->scrolled_by != before_scrolled_by || self->pixel_scroll_offset_y != before_pixels) {
+        dirty_scroll(self);
+        return true;
+    }
+    return false;
+}
+
+static PyObject*
+fractional_scroll(Screen *self, PyObject *amt) {
+    double y;
+    if (PyFloat_Check(amt)) y = PyFloat_AS_DOUBLE(amt);
+    else if (PyLong_Check(amt)) y = PyLong_AsDouble(amt);
+    else { PyErr_SetString(PyExc_TypeError, "amt must be a float"); return NULL; }
+    return Py_NewRef(screen_fractional_scroll(self, y) ? Py_True : Py_False);
 }
 
 static PyObject*
@@ -5133,6 +5279,18 @@ continue_line_upwards(Screen *self, index_type top_line, SelectionBoundary *star
 }
 
 static index_type
+continue_line_upwards_scrollback(Screen *self, int top_line, SelectionBoundary *start, SelectionBoundary *end) {
+    index_type num_in_scrollback = 0;
+    Line *line = NULL;
+    while (range_line_is_continued(self, top_line) && (line = range_line_(self, top_line-1))) {
+        screen_selection_range_for_line_(line, &start->x, &end->x) ;
+        top_line--; num_in_scrollback++;
+    }
+    return num_in_scrollback;
+}
+
+
+static index_type
 continue_line_downwards(Screen *self, index_type bottom_line, SelectionBoundary *start, SelectionBoundary *end) {
     while (bottom_line + 1 < self->lines && visual_line_is_continued(self, bottom_line + 1)) {
         if (!screen_selection_range_for_line(self, bottom_line + 1, &start->x, &end->x)) break;
@@ -5272,6 +5430,15 @@ do_update_selection(Screen *self, Selection *s, index_type x, index_type y, bool
                     } else {
                         top_line = continue_line_upwards(self, top_line, &up_start, &up_end);
                         S;
+                        // extend into scrollback if needed
+                        if (top_line == 0 && self->linebuf == self->main_linebuf) {
+                            index_type num_in_scrollback = continue_line_upwards_scrollback(
+                                    self, top_line, &up_start, &up_end);
+                            if (num_in_scrollback) {
+                                s->start_scrolled_by += num_in_scrollback;
+                                s->start.x = up_start.x;
+                            }
+                        }
                     }
                 }
 #undef S
@@ -5285,6 +5452,15 @@ do_update_selection(Screen *self, Selection *s, index_type x, index_type y, bool
                     if (!s->adjusting_start) { a = &s->end; b = &s->start; }
                     if (adjusted_boundary_is_before) {
                         a->in_left_half_of_cell = true; a->x = up_start.x; a->y = top_line;
+                        // extend into scrollback if needed
+                        if (top_line == 0 && self->linebuf == self->main_linebuf) {
+                            index_type num_in_scrollback = continue_line_upwards_scrollback(
+                                    self, top_line, &up_start, &up_end);
+                            if (num_in_scrollback) {
+                                s->start_scrolled_by += num_in_scrollback;
+                                s->start.x = up_start.x;
+                            }
+                        }
                     } else {
                         a->in_left_half_of_cell = false; a->x = down_end.x; a->y = bottom_line;
                     }
@@ -5613,6 +5789,7 @@ scroll_prompt_to_bottom(Screen *self, PyObject *args UNUSED) {
     // always scroll to the bottom
     if (self->scrolled_by != 0) {
         self->scrolled_by = 0;
+        reset_pixel_scroll(self, 0);
         dirty_scroll(self);
     }
     Py_RETURN_NONE;
@@ -5673,7 +5850,7 @@ line_edge_colors(Screen *self, PyObject *a UNUSED) {
 
 static PyObject*
 current_selections(Screen *self, PyObject *a UNUSED) {
-    PyObject *ans = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)self->lines * self->columns);
+    PyObject *ans = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)render_lines_for_screen(self) * self->columns);
     if (!ans) return NULL;
     screen_apply_selection(self, PyBytes_AS_STRING(ans), PyBytes_GET_SIZE(ans));
     return ans;
@@ -5849,6 +6026,7 @@ static PyMethodDef methods[] = {
     MND(text_for_marked_url, METH_VARARGS)
     MND(is_rectangle_select, METH_NOARGS)
     MND(scroll, METH_VARARGS)
+    MND(fractional_scroll, METH_O)
     MND(scroll_to_prompt, METH_VARARGS)
     MND(set_last_visited_prompt, METH_VARARGS)
     MND(send_escape_code_to_child, METH_VARARGS)

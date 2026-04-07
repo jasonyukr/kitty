@@ -573,7 +573,10 @@ line_as_ansi(Line *self, ANSILineState *s, index_type start_at, index_type stop_
             case OUTPUT_START: write_mark_to_ansi_buf(s, "C"); break;
         }
     }
-    if (s->limit <= start_at) return s->escape_code_written;
+    if (s->limit <= start_at) {
+        if (s->output_buf->active_hyperlink_id && start_at == 0 && !self->cpu_cells[0].hyperlink_id) write_hyperlink_to_ansi_buf(s, 0);
+        return s->escape_code_written;
+    }
 
     static const GPUCell blank_cell = { 0 };
     GPUCell *cell;
@@ -603,6 +606,8 @@ line_as_ansi(Line *self, ANSILineState *s, index_type start_at, index_type stop_
         }
     }
     close_multicell(s);
+    if (s->output_buf->active_hyperlink_id && s->limit < self->xnum && !self->cpu_cells[s->limit].hyperlink_id)
+        write_hyperlink_to_ansi_buf(s, 0);
     return s->escape_code_written;
 #undef CMP_ATTRS
 #undef CMP
@@ -979,7 +984,7 @@ apply_mark(Line *line, const uint16_t mark, index_type *cell_pos, unsigned int *
             }
         } else if (line->cpu_cells[x].is_multicell) {
             *match_pos += lc.count - 1;
-            index_type x_limit = MIN(line->xnum, mcd_x_limit(line->cpu_cells + x));
+            index_type x_limit = MIN(line->xnum, x + mcd_x_limit(line->cpu_cells + x));
             for (; x < x_limit; x++) { MARK; }
             x--;
         } else {

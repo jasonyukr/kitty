@@ -21,6 +21,7 @@ layout(std140) uniform CellRenderData {
 uniform float gamma_lut[256];
 uniform uint draw_bg_bitfield;
 uniform usampler2D sprite_decorations_map;
+uniform float row_offset;
 
 // Have to use fixed locations here as all variants of the cell program share the same VAOs
 layout(location=0) in uvec3 colors;
@@ -181,12 +182,15 @@ uint read_sprite_decorations_idx() {
 
 uvec2 get_decorations_indices(uint in_url /* [0, 1] */, uint text_attrs) {
     uint decorations_idx = read_sprite_decorations_idx();
+    // decorations_idx == 0 means no decorations, for example, for a blank line
+    // when drawing fractionally scaled text
+    uint has_decorations = uint(zero_or_one(float(decorations_idx)));
     uint strike_style = ((text_attrs >> STRIKE_SHIFT) & BIT_MASK); // 0 or 1
     uint strike_idx = decorations_idx * strike_style;
     uint underline_style = ((text_attrs >> DECORATION_SHIFT) & DECORATION_MASK);
     underline_style = in_url * url_style + (1u - in_url) * underline_style; // [0, 5]
     uint has_underline = uint(step(0.5f, float(underline_style)));  // [0, 1]
-    return uvec2(strike_idx, has_underline * (decorations_idx + underline_style));
+    return has_decorations * uvec2(strike_idx, has_underline * (decorations_idx + underline_style));
 }
 
 uint is_cursor(uint x, uint y) {
@@ -212,7 +216,7 @@ CellData set_vertex_position(vec3 cell_fg, vec3 cell_bg) {
     uint column = instance_id - row * columns;
     /* The position of this vertex, at a corner of the cell  */
     float left = -1.0 + column * dx;
-    float top = 1.0 - row * dy;
+    float top = 1.0 - (float(row) + row_offset) * dy;
     uvec2 pos = cell_pos_map[gl_VertexID];
     gl_Position = vec4(vec2(left, left + dx)[pos.x], vec2(top, top - dy)[pos.y], 0, 1);
     // The character sprite being rendered

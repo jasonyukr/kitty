@@ -1,5 +1,5 @@
 import termios
-from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Tuple, TypedDict, Union, overload
+from typing import Any, Callable, Dict, Iterator, List, Literal, NewType, Optional, Sequence, Tuple, TypedDict, Union, overload
 
 from kitty.borders import Border
 from kitty.boss import Boss
@@ -20,6 +20,9 @@ COLOR_IS_SPECIAL: int
 COLOR_NOT_SET: int
 COLOR_IS_RGB: int
 COLOR_IS_INDEX: int
+GLFW_DRAG_OPERATION_MOVE: int
+GLFW_DRAG_OPERATION_COPY: int
+GLFW_DRAG_OPERATION_GENERIC: int
 GLFW_LAYER_SHELL_NONE: int
 GLFW_LAYER_SHELL_PANEL: int
 GLFW_LAYER_SHELL_TOP: int
@@ -279,6 +282,7 @@ CELL_PROGRAM: int
 CELL_FG_PROGRAM: int
 CELL_BG_PROGRAM: int
 BLIT_PROGRAM: int
+SCREENSHOT_PROGRAM: int
 ROUNDED_RECT_PROGRAM: int
 DECORATION: int
 BLINK: int
@@ -324,6 +328,8 @@ WINDOW_HIDDEN: int
 TEXT_SIZE_CODE: int
 TOP_EDGE: int
 BOTTOM_EDGE: int
+LEFT_EDGE: int
+RIGHT_EDGE: int
 # }}}
 
 
@@ -740,6 +746,9 @@ def patch_global_colors(spec: Dict[str, Optional[int]], configured: bool) -> Non
 
 
 class Color:
+    @classmethod
+    def parse_color(cls, spec: str) -> Color | None: ...
+
     @property
     def rgb(self) -> int:
         pass
@@ -1012,9 +1021,8 @@ def cocoa_window_id(os_window_id: int) -> int:
     pass
 
 
-def swap_tabs(os_window_id: int, a: int, b: int) -> None:
-    pass
-
+def swap_tabs(os_window_id: int, a: int, b: int) -> None: ...
+def reorder_tabs(os_window_id: int, *tab_ids: int) -> None: ...
 
 def set_active_tab(os_window_id: int, a: int) -> None:
     pass
@@ -1024,8 +1032,8 @@ def set_active_window(os_window_id: int, tab_id: int, window_id: int) -> None:
     pass
 
 
-def ring_bell(os_window_id: int = 0) -> None:
-    pass
+def ring_bell(os_window_id: int = 0) -> None: ...
+def request_attention(os_window_id: int) -> None: ...
 
 
 def concat_cells(cell_width: int, cell_height: int, is_32_bit: bool, cells: Tuple[bytes, ...], bgcolor: int = 0) -> bytes:
@@ -1067,6 +1075,9 @@ def next_window_id() -> int:
 
 def mark_tab_bar_dirty(os_window_id: int, should_be_shown: bool) -> None:
     pass
+
+
+def is_tab_bar_visible(os_window_id: int) -> bool: ...
 
 
 def detach_window(os_window_id: int, tab_id: int, window_id: int) -> None:
@@ -1311,6 +1322,9 @@ class Screen:
     def scroll(self, amt: int, upwards: bool) -> bool:
         pass
 
+    def fractional_scroll(self, amt: float) -> bool:
+        pass
+
     def scroll_to_next_mark(self, mark: int = 0, backwards: bool = True) -> bool:
         pass
 
@@ -1375,6 +1389,9 @@ class Screen:
     def insert_characters(self, num: int) -> None:
         pass
 
+    def delete_characters(self, num: int) -> None: ...
+    def erase_characters(self, num: int) -> None: ...
+
     def line_edge_colors(self) -> Tuple[int, int]:
         pass
 
@@ -1386,6 +1403,13 @@ class Screen:
 
 def set_tab_bar_render_data(
     os_window_id: int, screen: Screen, left: int, top: int, right: int, bottom: int
+) -> None:
+    pass
+
+
+def set_window_title_bar_render_data(
+    os_window_id: int, tab_id: int, window_id: int, screen: Screen,
+    left: int, top: int, right: int, bottom: int
 ) -> None:
     pass
 
@@ -1598,7 +1622,7 @@ def get_click_interval() -> float:
     pass
 
 
-def send_data_to_peer(peer_id: int, data: Union[str, bytes]) -> None:
+def send_data_to_peer(peer_id: int, data: Union[str, bytes], is_async_response: bool = False) -> None:
     pass
 
 
@@ -1763,6 +1787,7 @@ def buffer_keys_in_window(os_window_id: int, tab_id: int, window_id: int, enable
 def sprite_idx_to_pos(idx: int, xnum: int, ynum: int) -> tuple[int, int, int]: ...
 def render_box_char(ch: int, width: int, height: int, scale: float = 1.0, dpi_x: float = 96.0, dpi_y: float = 96.0) -> bytes: ...
 def run_at_exit_cleanup_functions() -> None: ...
+def all_color_names() -> tuple[tuple[str, Color], ...]: ...
 def grab_keyboard(grab: bool | None) -> bool: ...
 DecorationTypes = Literal[
     'curl', 'dashed', 'dotted', 'double', 'straight', 'strikethrough', 'beam_cursor', 'underline_cursor', 'hollow_cursor', 'missing']
@@ -1798,3 +1823,18 @@ class StreamingBase64Encodeer:
     def reset(self) -> bytes: ...
     # encode the specified data, return number of bytes written dest should be at least 4/3 *src + 2 bytes in size
     def encode_into(self, dest: WriteableBuffer, src: ReadableBuffer) -> int: ...
+
+
+def start_drag_with_data(
+    os_window_id: int, data_map: dict[str, bytes], thumbnails: Sequence[tuple[bytes, int, int]],
+    operations: int = GLFW_DRAG_OPERATION_MOVE
+) -> None: ...
+def change_drag_thumbnail(os_window_id: int, idx: int = -1) -> None: ...
+def draw_single_line_of_text(os_window_id: int, text: str, fg: int, bg: int, width: int, padding_y: int = 2) -> bytes: ...
+def set_tab_being_dragged(tab_id: int = 0, drag_started: bool = False, x: float = 0, y: float = 0) -> None: ...
+def get_tab_being_dragged() -> tuple[int, bool, float, float]: ...
+def request_callback_with_thumbnail(
+        callback: str, os_window_id: int, window_id: int = 0, include_tab_bar: bool = False,
+        scale: float = 0.25, max_width: int = 480
+) -> None: ...
+def png_from_32bit_rgba_data(data: bytes, width: int, height: int, flip_vertically: bool = False) -> bytes: ...

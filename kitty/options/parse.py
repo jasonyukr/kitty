@@ -48,6 +48,9 @@ class Parser:
     def active_tab_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['active_tab_title_template'] = active_tab_title_template(val)
 
+    def active_window_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['active_window_title_template'] = tab_title_template(val)
+
     def allow_cloning(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
         if val not in self.choices_for_allow_cloning:
@@ -1085,6 +1088,9 @@ class Parser:
     def macos_custom_beam_cursor(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['macos_custom_beam_cursor'] = to_bool(val)
 
+    def macos_dock_badge_on_bell(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['macos_dock_badge_on_bell'] = to_bool(val)
+
     def macos_hide_from_tasks(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['macos_hide_from_tasks'] = to_bool(val)
 
@@ -1117,6 +1123,9 @@ class Parser:
     def macos_window_resizable(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['macos_window_resizable'] = to_bool(val)
 
+    def map_timeout(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['map_timeout'] = positive_float(val)
+
     def mark1_background(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['mark1_background'] = to_color(val)
 
@@ -1143,6 +1152,9 @@ class Parser:
         for k, v in modify_font(val):
             ans["modify_font"][k] = v
 
+    def momentum_scroll(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['momentum_scroll'] = unit_float(val)
+
     def mouse_hide_wait(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['mouse_hide_wait'] = mouse_hide_wait(val)
 
@@ -1158,6 +1170,9 @@ class Parser:
 
     def paste_actions(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['paste_actions'] = paste_actions(val)
+
+    def pixel_scroll(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['pixel_scroll'] = to_bool(val)
 
     def placement_strategy(self, val: str, ans: dict[str, typing.Any]) -> None:
         val = val.lower()
@@ -1315,6 +1330,9 @@ class Parser:
     def tab_bar_background(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['tab_bar_background'] = to_color_or_none(val)
 
+    def tab_bar_drag_threshold(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['tab_bar_drag_threshold'] = positive_int(val)
+
     def tab_bar_edge(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['tab_bar_edge'] = tab_bar_edge(val)
 
@@ -1457,6 +1475,9 @@ class Parser:
     def window_border_width(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_border_width'] = window_border_width(val)
 
+    def window_drag_tolerance(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_drag_tolerance'] = float(val)
+
     def window_logo_alpha(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_logo_alpha'] = unit_float(val)
 
@@ -1485,6 +1506,40 @@ class Parser:
 
     def window_resize_step_lines(self, val: str, ans: dict[str, typing.Any]) -> None:
         ans['window_resize_step_lines'] = positive_int(val)
+
+    def window_title_bar(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
+        if val not in self.choices_for_window_title_bar:
+            raise ValueError(f"The value {val} is not a valid choice for window_title_bar")
+        ans["window_title_bar"] = val
+
+    choices_for_window_title_bar = frozenset(('top', 'bottom'))
+
+    def window_title_bar_active_background(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_bar_active_background'] = to_color_or_none(val)
+
+    def window_title_bar_active_foreground(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_bar_active_foreground'] = to_color_or_none(val)
+
+    def window_title_bar_align(self, val: str, ans: dict[str, typing.Any]) -> None:
+        val = val.lower()
+        if val not in self.choices_for_window_title_bar_align:
+            raise ValueError(f"The value {val} is not a valid choice for window_title_bar_align")
+        ans["window_title_bar_align"] = val
+
+    choices_for_window_title_bar_align = choices_for_tab_bar_align
+
+    def window_title_bar_inactive_background(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_bar_inactive_background'] = to_color_or_none(val)
+
+    def window_title_bar_inactive_foreground(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_bar_inactive_foreground'] = to_color_or_none(val)
+
+    def window_title_bar_min_windows(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_bar_min_windows'] = positive_int(val)
+
+    def window_title_template(self, val: str, ans: dict[str, typing.Any]) -> None:
+        ans['window_title_template'] = tab_title_template(val)
 
     def x11_hide_window_decorations(self, val: str, ans: dict[str, typing.Any]) -> None:
         deprecated_hide_window_decorations_aliases('x11_hide_window_decorations', val, ans)

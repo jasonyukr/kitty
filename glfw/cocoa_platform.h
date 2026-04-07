@@ -116,6 +116,16 @@ typedef void* (*PFN_TISGetInputSourceProperty)(TISInputSourceRef,CFStringRef);
 typedef UInt8 (*PFN_LMGetKbdType)(void);
 #define LMGetKbdType _glfw.ns.tis.GetKbdType
 
+typedef struct _GLFWDropData {
+    const char **mimes;          // Original MIME list; strings are owned here, never reordered
+    size_t mimes_count;
+    const char **copy_mimes;     // Working copy passed to callbacks; pointers into mimes[]
+    size_t copy_mimes_count;     // Accepted count after last callback
+    bool drag_accepted;
+    id pasteboard;
+    id data_mapping;
+    id file_promise_mapping;
+} _GLFWDropData;
 
 // Cocoa-specific per-window data
 //
@@ -130,8 +140,13 @@ typedef struct _GLFWwindowNS
     bool            retina;
     bool            in_traditional_fullscreen;
     bool            in_fullscreen_transition;
+    bool            suppress_frame_constraints;
+    id              notch_cover_window;
+    unsigned int    notch_cover_color;
+    float           notch_cover_opacity;
     bool            titlebar_hidden;
     unsigned long   pre_full_screen_style_mask;
+    CGRect          pre_traditional_fullscreen_frame;
 
     // Cached window properties to filter out duplicate events
     int             width, height;
@@ -139,6 +154,9 @@ typedef struct _GLFWwindowNS
     float           xscale, yscale;
     int             blur_radius;
     bool live_resize_in_progress;
+    struct {
+        struct { CGFloat red, green, blue, alpha; bool was_set; } color; bool transparent;
+    } last_applied_titlebar_settings;
 
     // The total sum of the distances the cursor has been warped
     // since the last cursor motion event was processed
@@ -164,6 +182,10 @@ typedef struct _GLFWwindowNS
     // update cursor after switching desktops with Mission Control
     bool delayed_cursor_update_requested;
     GLFWcocoarenderframefun resizeCallback;
+
+    // Cached MIME types from drag enter (for move events)
+    _GLFWDropData drop_data;
+
 } _GLFWwindowNS;
 
 // Cocoa-specific global data
@@ -202,6 +224,8 @@ typedef struct _GLFWlibraryNS
     // the callback to handle url open events
     GLFWhandleurlopen url_open_callback;
 
+    // Active drag session (NSDraggingSession*) and view (NSView*)
+    id drag_session, drag_view, drag_image;
 } _GLFWlibraryNS;
 
 // Cocoa-specific per-monitor data

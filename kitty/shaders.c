@@ -25,6 +25,7 @@ enum {
     TINT_PROGRAM,
     TRAIL_PROGRAM,
     BLIT_PROGRAM,
+    SCREENSHOT_PROGRAM,
     ROUNDED_RECT_PROGRAM,
     NUM_PROGRAMS
 };
@@ -39,6 +40,18 @@ typedef struct UIRenderData {
     bool has_background_image;
     color_type background_color; // RGB only
 } UIRenderData;
+
+static inline float
+row_offset_for_screen(const Screen *screen) {
+    if (!pixel_scroll_enabled(screen) || !screen->cell_size.height) return 0.f;
+    return -1.f + (float)(screen->pixel_scroll_offset_y / (double)screen->cell_size.height);
+}
+
+static inline float
+scroll_offset_lines_for_screen(const Screen *screen) {
+    if (!pixel_scroll_enabled(screen) || !screen->cell_size.height) return 0.f;
+    return (float)(screen->pixel_scroll_offset_y / (double)screen->cell_size.height);
+}
 
 // Sprites {{{
 typedef struct {
@@ -106,7 +119,7 @@ free_sprite_data(FONTS_DATA_HANDLE fg) {
     SpriteMap *sprite_map = (SpriteMap*)fg->sprite_map;
     if (sprite_map) {
         if (sprite_map->texture_id) free_texture(&sprite_map->texture_id);
-        if (sprite_map->decorations_map.texture_id) free_texture(&sprite_map->texture_id);
+        if (sprite_map->decorations_map.texture_id) free_texture(&sprite_map->decorations_map.texture_id);
         free(sprite_map);
         fg->sprite_map = NULL;
     }
@@ -351,6 +364,10 @@ typedef struct {
 } BlitProgramLayout;
 static BlitProgramLayout blit_program_layout;
 
+typedef struct {
+    ScreenshotUniforms uniforms;
+} ScreenshotProgramLayout;
+static ScreenshotProgramLayout screenshot_program_layout;
 
 static void
 init_cell_program(void) {
@@ -378,6 +395,7 @@ init_cell_program(void) {
     get_uniform_locations_tint(TINT_PROGRAM, &tint_program_layout.uniforms);
     get_uniform_locations_trail(TRAIL_PROGRAM, &trail_program_layout.uniforms);
     get_uniform_locations_blit(BLIT_PROGRAM, &blit_program_layout.uniforms);
+    get_uniform_locations_screenshot(SCREENSHOT_PROGRAM, &screenshot_program_layout.uniforms);
     get_uniform_locations_rounded_rect(ROUNDED_RECT_PROGRAM, &rounded_rect_program_layout.uniforms);
 }
 
@@ -486,6 +504,10 @@ cell_update_uniform_block(ssize_t vao_idx, Screen *screen, int uniform_buffer, c
     if (rd->cursor_opacity != 0 && cursor->is_visible) {
         rd->cursor_x1 = cursor->x, rd->cursor_y1 = cursor->y;
         rd->cursor_x2 = cursor->x, rd->cursor_y2 = cursor->y;
+        if (pixel_scroll_enabled(screen)) {
+            rd->cursor_y1 += 1;
+            rd->cursor_y2 += 1;
+        }
         CursorShape cs = (cursor->is_focused || OPT(cursor_shape_unfocused) == NO_CURSOR_SHAPE) ? cursor->shape : OPT(cursor_shape_unfocused);
         rd->cursor_shape = cs;
         color_type cell_fg = rd->default_fg, cell_bg = rd->bg_colors0;
@@ -573,7 +595,8 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
     bool screen_resized = screen->last_rendered.columns != screen->columns || screen->last_rendered.lines != screen->lines;
 
 #define update_cell_data { \
-        sz = sizeof(GPUCell) * screen->lines * screen->columns; \
+        const unsigned int render_lines = render_lines_for_screen(screen); \
+        sz = sizeof(GPUCell) * render_lines * screen->columns; \
         address = alloc_and_map_vao_buffer(vao_idx, sz, cell_data_buffer, true); \
         screen_update_cell_data(screen, address, fonts_data, disable_ligatures && cursor_pos_changed); \
         unmap_vao_buffer(vao_idx, cell_data_buffer); address = NULL; \
@@ -585,7 +608,8 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
     } else if (screen->reload_all_gpu_data || screen->scroll_changed || screen->is_dirty || screen_resized || (disable_ligatures && cursor_pos_changed)) update_cell_data;
 
 #define update_selection_data { \
-    sz = (size_t)screen->lines * screen->columns; \
+    const unsigned int render_lines = render_lines_for_screen(screen); \
+    sz = (size_t)render_lines * screen->columns; \
     address = alloc_and_map_vao_buffer(vao_idx, sz, selection_buffer, true); \
     screen_apply_selection(screen, address, sz); \
     unmap_vao_buffer(vao_idx, selection_buffer); address = NULL; \
@@ -593,7 +617,7 @@ cell_prepare_to_render(ssize_t vao_idx, Screen *screen, FONTS_DATA_HANDLE fonts_
 }
 
 #define update_graphics_data(grman) \
-    grman_update_layers(grman, screen->scrolled_by, -1.f, 1.f, 2.f/screen->columns, 2.f/screen->lines, screen->columns, screen->lines, screen->cell_size)
+    grman_update_layers(grman, screen->scrolled_by, scroll_offset_lines_for_screen(screen), -1.f, 1.f, 2.f/screen->columns, 2.f/screen->lines, screen->columns, screen->lines, screen->cell_size)
 
     if (screen->paused_rendering.expires_at) {
         if (!screen->paused_rendering.cell_data_updated) {
@@ -700,6 +724,7 @@ set_cell_uniforms(bool force) {
             glUniform1f(cu->text_gamma_adjustment, text_gamma_adjustment);
         }
         bind_program(BLIT_PROGRAM); glUniform1i(blit_program_layout.uniforms.image, GRAPHICS_UNIT);
+        bind_program(SCREENSHOT_PROGRAM); glUniform1i(screenshot_program_layout.uniforms.image, GRAPHICS_UNIT);
         constants_set = true;
     }
 }
@@ -924,7 +949,9 @@ draw_scrollbar(const UIRenderData *ui) {
     if (!window || !screen || !has_scrollbar(window, screen)) return;
 
     color_type bar_color = scrollbar_color(screen, OPT(scrollbar_handle_color)), track_color = scrollbar_color(screen, OPT(scrollbar_track_color));
-    float bar_frac = (float)screen->scrolled_by / MAX(1u, (float)screen->historybuf->count);
+    double cell_frac = (double)screen->pixel_scroll_offset_y / screen->cell_size.height;
+    if (!OPT(pixel_scroll)) cell_frac = 0;
+    float bar_frac = (float)(screen->scrolled_by + cell_frac) / MAX(1u, (float)screen->historybuf->count);
     float opacity = OPT(scrollbar_handle_opacity);
     float track_opacity = window->scrollbar.is_hovering ? OPT(scrollbar_track_hover_opacity) : OPT(scrollbar_track_opacity);
     GLsizei scrollbar_width_px = (GLsizei)(OPT(scrollbar_width) * ui->cell_width);
@@ -1054,9 +1081,14 @@ draw_window_logo(const UIRenderData *ui) {
 
 bool
 screen_needs_rendering_in_layers(OSWindow *os_window, Window *w, Screen *screen) {
-    const bool has_ui = has_visual_bell(screen) || has_scrollbar(w, screen) || has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen);
+    const bool has_ui = w && (has_visual_bell(screen) || has_scrollbar(w, screen) || has_hyperlink_target(os_window, w, screen) || has_window_number(w, screen) || w->window_logo.id);
     GraphicsManager *grman = screen->paused_rendering.expires_at && screen->paused_rendering.grman ? screen->paused_rendering.grman : screen->grman;
-    return has_ui || (w && w->window_logo.id) || grman_has_images(grman);
+    return has_ui || grman_has_images(grman);
+}
+
+bool
+current_framebuffer_is_ok(void) {
+    return check_framebuffer_status() == NULL;
 }
 
 // }}}
@@ -1069,8 +1101,9 @@ call_cell_program(int program, const UIRenderData *ui, ssize_t vao_idx, bool for
     CELL_BUFFERS;
     bind_vao_uniform_buffer(vao_idx, uniform_buffer, cell_program_layouts[program].render_data.index);
     glUniform1ui(cell_program_layouts[program].uniforms.draw_bg_bitfield, draw_bg_bitfield);
+    glUniform1f(cell_program_layouts[program].uniforms.row_offset, row_offset_for_screen(ui->screen));
     if (for_final_output) glEnable(GL_FRAMEBUFFER_SRGB);
-    draw_quad(!for_final_output, ui->screen->lines * ui->screen->columns);
+    draw_quad(!for_final_output, render_lines_for_screen(ui->screen) * ui->screen->columns);
     if (for_final_output) glDisable(GL_FRAMEBUFFER_SRGB);
 }
 
@@ -1415,18 +1448,28 @@ start_os_window_rendering(OSWindow *os_window, Tab *tab) {
     // note that during live resize rendering is done in layers
     if (os_window->live_resize.in_progress) blank_os_window(os_window);
     if (os_window->needs_layers) {
-        if (os_window->indirect_output.width != os_window->viewport_width || os_window->indirect_output.height != os_window->viewport_height) {
-            if (os_window->indirect_output.texture_id) free_texture(&os_window->indirect_output.texture_id);
-            if (os_window->indirect_output.framebuffer_id) free_framebuffer(&os_window->indirect_output.framebuffer_id);
+        // Ensure the global shared texture is large enough for this window
+        if (global_state.layers_render_texture.width < os_window->viewport_width ||
+                global_state.layers_render_texture.height < os_window->viewport_height) {
+            if (global_state.layers_render_texture.texture_id) free_texture(&global_state.layers_render_texture.texture_id);
+            if (global_state.layers_render_texture.framebuffer_id) free_framebuffer(&global_state.layers_render_texture.framebuffer_id);
+            unsigned new_w = (unsigned)MAX(global_state.layers_render_texture.width, os_window->viewport_width);
+            unsigned new_h = (unsigned)MAX(global_state.layers_render_texture.height, os_window->viewport_height);
+            setup_texture_as_render_target(new_w, new_h, &global_state.layers_render_texture.texture_id, &global_state.layers_render_texture.framebuffer_id);
+            global_state.layers_render_texture.width = (int)new_w;
+            global_state.layers_render_texture.height = (int)new_h;
+            global_state.layers_render_texture.texture_generation++;
         }
-        if (os_window->indirect_output.texture_id == 0) {
-            os_window->indirect_output.width = os_window->viewport_width;
-            os_window->indirect_output.height = os_window->viewport_height;
-            setup_texture_as_render_target((unsigned) os_window->viewport_width, (unsigned)os_window->viewport_height, &os_window->indirect_output.texture_id, &os_window->indirect_output.framebuffer_id);
+        // Create per-window framebuffer if needed and attach the global texture to it
+        if (!os_window->indirect_output.framebuffer_id) glGenFramebuffers(1, &os_window->indirect_output.framebuffer_id);
+        if (os_window->indirect_output.attached_texture_generation != global_state.layers_render_texture.texture_generation) {
+            bind_framebuffer_for_output(os_window->indirect_output.framebuffer_id);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, global_state.layers_render_texture.texture_id, 0);
+            os_window->indirect_output.attached_texture_generation = global_state.layers_render_texture.texture_generation;
         }
         set_framebuffer_to_use_for_output(os_window->indirect_output.framebuffer_id);
         bind_framebuffer_for_output(0);
-        save_viewport_using_bottom_left_origin(0, 0, os_window->indirect_output.width, os_window->indirect_output.height);
+        save_viewport_using_bottom_left_origin(0, 0, os_window->viewport_width, os_window->viewport_height);
         clear_current_framebuffer();
         draw_bg_image(os_window, tab);
     }
@@ -1440,8 +1483,10 @@ stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window) {
         bind_framebuffer_for_output(0);
         bind_program(BLIT_PROGRAM);
         glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
-        glBindTexture(GL_TEXTURE_2D, os_window->indirect_output.texture_id);
-        glUniform4f(blit_program_layout.uniforms.src_rect, 0, 1, 1, 0);
+        glBindTexture(GL_TEXTURE_2D, global_state.layers_render_texture.texture_id);
+        float sx = global_state.layers_render_texture.width > 0 ? (float)os_window->viewport_width / (float)global_state.layers_render_texture.width : 1.f;
+        float sy = global_state.layers_render_texture.height > 0 ? (float)os_window->viewport_height / (float)global_state.layers_render_texture.height : 1.f;
+        glUniform4f(blit_program_layout.uniforms.src_rect, 0, sy, sx, 0);
         glUniform4f(blit_program_layout.uniforms.dest_rect, -1, 1, 1, -1);
         restore_viewport();
         if (os_window->live_resize.in_progress) save_viewport_using_top_left_origin(
@@ -1460,6 +1505,93 @@ void
 setup_os_window_for_rendering(OSWindow *os_window, Tab *tab, Window *active_window, bool start) {
     if (start) start_os_window_rendering(os_window, tab);
     else stop_os_window_rendering(os_window, tab, active_window);
+}
+
+// Take a screenshot of the OS Window, must be called immediately after
+// the OSWindow is rendered into the back buffer and before the buffers
+// are swapped. If thumb_w or thumb_h are zero the are set to the corresponding
+// dimension of the source region (viewport or central region without tab bar).
+// Takes a screenshot of a rectangular region of the OSWindow's framebuffer.
+// The region parameter specifies which part of the framebuffer to capture.
+// Scaling is performed on the GPU using the SCREENSHOT_PROGRAM shader for better performance.
+// The shader properly handles sRGB color space conversion and downscaling.
+// Setting the thumbnail dimensions to zero disables scaling.
+void
+take_screenshot_of_rectangular_region(OSWindow *os_window, Region region, unsigned char *dst_buf, unsigned *thumb_w, unsigned *thumb_h) {
+    unsigned vw = os_window->viewport_width;
+    unsigned vh = os_window->viewport_height;
+
+    // Calculate the source region dimensions
+    unsigned src_height = region.bottom - region.top;
+    unsigned src_width = region.right - region.left;
+
+    if (!*thumb_w) *thumb_w = src_width;
+    if (!*thumb_h) *thumb_h = src_height;
+    *thumb_w = MIN(src_width, *thumb_w);
+    *thumb_h = MIN(src_height, *thumb_h);
+
+    // Create a texture to hold the current framebuffer content
+    GLuint src_texture = 0;
+    glGenTextures(1, &src_texture);
+    glBindTexture(GL_TEXTURE_2D, src_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    // Copy the current framebuffer to the texture
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, vw, vh, 0);
+
+    // Create a temporary framebuffer for GPU-based scaling
+    GLuint temp_texture = 0, temp_framebuffer = 0;
+    setup_texture_as_render_target(*thumb_w, *thumb_h, &temp_texture, &temp_framebuffer);
+
+    // Save current state
+    GLint current_framebuffer;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &current_framebuffer);
+
+    // Bind our temporary framebuffer for rendering
+    bind_framebuffer_for_output(temp_framebuffer);
+    save_viewport_using_bottom_left_origin(0, 0, *thumb_w, *thumb_h);
+
+    // Use the screenshot program to render the scaled framebuffer with proper color space handling
+    bind_program(SCREENSHOT_PROGRAM);
+
+    // Set source rectangle (normalized coordinates: 0 to 1)
+    // Note: OpenGL texture origin is bottom-left, but Region uses top-left origin
+    // Convert from screen coordinates (top-left origin) to OpenGL texture coordinates (bottom-left origin)
+    float src_left_norm = (float)region.left / (float)vw;
+    float src_right_norm = (float)region.right / (float)vw;
+    float src_bottom_norm = (float)(vh - region.bottom) / (float)vh;
+    float src_top_norm = (float)(vh - region.top) / (float)vh;
+    glUniform4f(screenshot_program_layout.uniforms.src_rect, src_left_norm, src_top_norm, src_right_norm, src_bottom_norm);
+
+    // Set destination rectangle (NDC coordinates: -1 to 1)
+    glUniform4f(screenshot_program_layout.uniforms.dest_rect, -1.0f, -1.0f, 1.0f, 1.0f);
+
+    // Set the source texture size for proper downscaling
+    glUniform2f(screenshot_program_layout.uniforms.src_size, (float)vw, (float)vh);
+
+    // Bind the source texture
+    glActiveTexture(GL_TEXTURE0 + GRAPHICS_UNIT);
+    glBindTexture(GL_TEXTURE_2D, src_texture);
+
+    // Draw the scaled quad
+    draw_quad(false, 0);
+
+    // Read the scaled result
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, *thumb_w, *thumb_h, GL_RGBA, GL_UNSIGNED_BYTE, dst_buf);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+
+    // Restore previous state
+    bind_framebuffer_for_output(current_framebuffer);
+    restore_viewport();
+
+    // Clean up temporary resources
+    free_texture(&src_texture);
+    free_texture(&temp_texture);
+    free_framebuffer(&temp_framebuffer);
 }
 // }}}
 
@@ -1577,7 +1709,7 @@ init_shaders(PyObject *module) {
 #define C(x) if (PyModule_AddIntConstant(module, #x, x) != 0) { PyErr_NoMemory(); return false; }
     C(CELL_PROGRAM); C(CELL_FG_PROGRAM); C(CELL_BG_PROGRAM); C(BORDERS_PROGRAM);
     C(GRAPHICS_PROGRAM); C(GRAPHICS_PREMULT_PROGRAM); C(GRAPHICS_ALPHA_MASK_PROGRAM);
-    C(BGIMAGE_PROGRAM); C(TINT_PROGRAM); C(TRAIL_PROGRAM); C(BLIT_PROGRAM); C(ROUNDED_RECT_PROGRAM);
+    C(BGIMAGE_PROGRAM); C(TINT_PROGRAM); C(TRAIL_PROGRAM); C(BLIT_PROGRAM); C(SCREENSHOT_PROGRAM); C(ROUNDED_RECT_PROGRAM);
     C(GLSL_VERSION);
     C(GL_VERSION);
     C(GL_VENDOR);

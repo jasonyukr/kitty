@@ -18,11 +18,13 @@
 #include <stdbool.h>
 #include <poll.h>
 #include <pthread.h>
+#include <locale.h>
 #include "glfw-wrapper.h"
 #include "banned.h"
 // Required minimum OpenGL version
 #define OPENGL_REQUIRED_VERSION_MAJOR 3
 #ifdef __APPLE__
+#include <xlocale.h>
 #define OPENGL_REQUIRED_VERSION_MINOR 3
 #else
 #define OPENGL_REQUIRED_VERSION_MINOR 1
@@ -267,7 +269,7 @@ typedef struct {
 } ColorProfile;
 
 typedef struct {
-    unsigned int width, height;
+    unsigned width, height;
 } CellPixelSize;
 
 typedef struct {int x;} *SPRITE_MAP_HANDLE;
@@ -328,9 +330,11 @@ void enter_event(int modifiers);
 void leave_event(int modifiers);
 void mouse_event(const int, int, int);
 void focus_in_event(void);
-void scroll_event(double, double, int, int);
+void scroll_event(const GLFWScrollEvent *ev);
 void on_key_input(const GLFWkeyevent *ev);
 void request_window_attention(id_type, bool);
+void free_drag_source(void);
+locale_t get_c_locale(void);
 #ifndef __APPLE__
 void play_canberra_sound(const char *which_sound, const char *event_id, bool is_path, const char *role, const char *theme_name);
 #endif

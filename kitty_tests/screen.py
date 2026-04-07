@@ -3,8 +3,7 @@
 
 from kitty.config import defaults
 from kitty.fast_data_types import DECAWM, DECCOLM, DECOM, IRM, VT_PARSER_BUFFER_SIZE, Color, ColorProfile, Cursor
-from kitty.marks import marker_from_function, marker_from_regex
-from kitty.rgb import color_names
+from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
 from kitty.window import pagerhist
 
 from . import BaseTest, draw_multicell, parse_bytes
@@ -806,12 +805,13 @@ class TestScreen(BaseTest):
 
     def test_serialize(self):
         from kitty.window import as_text
+        sgr0 = '\x1b[m'  # ]
         s = self.create_screen()
-        parse_bytes(s, b'\x1b[1;91m')
+        parse_bytes(s, b'\x1b[1;91m')  # ]
         s.draw('X')
-        parse_bytes(s, b'\x1b[0m\x1b[2m')
+        parse_bytes(s, b'\x1b[0m\x1b[2m')  # ]]
         s.draw('Y')
-        self.ae(as_text(s, True), '\x1b[m\x1b[22;1;91mX\x1b[22;2;39mY\n\n\n\n')
+        self.ae(as_text(s, True), f'{sgr0}\x1b[22;1;91mX\x1b[22;2;39mY\n\n\n\n')  # ]]
 
         s.reset()
         s.draw('ab' * s.columns)
@@ -819,30 +819,45 @@ class TestScreen(BaseTest):
         s.draw('c')
 
         self.ae(as_text(s), 'ababababab\nc\n\n')
-        self.ae(as_text(s, True), '\x1b[mababa\x1b[mbabab\n\x1b[mc\n\n')
+        self.ae(as_text(s, True), f'{sgr0}ababa{sgr0}babab\n{sgr0}c\n\n')
 
         s = self.create_screen(cols=2, lines=2, scrollback=2)
         for i in range(1, 7):
             s.select_graphic_rendition(30 + i)
             s.draw(f'{i}' * s.columns)
-        self.ae(as_text(s, True, True), '\x1b[m\x1b[31m11\x1b[m\x1b[32m22\x1b[m\x1b[33m33\x1b[m\x1b[34m44\x1b[m\x1b[m\x1b[35m55\x1b[m\x1b[36m66')
+        self.ae(as_text(s, True, True), f'{sgr0}\x1b[31m11{sgr0}\x1b[32m22{sgr0}\x1b[33m33{sgr0}\x1b[34m44{sgr0}{sgr0}\x1b[35m55{sgr0}\x1b[36m66')
+        # ]]]]]]]]]]]]]]]]]]]]]
+
+        def hl(url='', id=''):
+            return '\x1b]8;{};{}\x1b\\'.format(f'id={id}' if id else '', url or '')
 
         def set_link(url=None, id=None):
-            parse_bytes(s, '\x1b]8;id={};{}\x1b\\'.format(id or '', url or '').encode('utf-8'))
+            parse_bytes(s, hl(url, id).encode('utf-8'))
 
         s = self.create_screen()
+        set_link('moo')
+        s.draw('X')
+        set_link()
+        self.ae(as_text(s, True), f'{sgr0}{hl("moo")}X{hl()}\n\n\n\n')
+        s.reset()
+        set_link('moo')
+        s.draw('X'*s.columns)
+        set_link()
+        self.ae(as_text(s, True), f'{sgr0}{hl("moo")}XXXXX\n{sgr0}{hl()}\n\n\n')
+
+        s.reset()
         s.draw('a')
         set_link('moo', 'foo')
         s.draw('bcdef')
-        self.ae(as_text(s, True), '\x1b[ma\x1b]8;id=foo;moo\x1b\\bcde\x1b[mf\n\n\n\x1b]8;;\x1b\\')
+        self.ae(as_text(s, True), f'{sgr0}a{hl("moo", "foo")}bcde{sgr0}f{hl()}\n\n\n')
         set_link()
         s.draw('gh')
-        self.ae(as_text(s, True), '\x1b[ma\x1b]8;id=foo;moo\x1b\\bcde\x1b[mf\x1b]8;;\x1b\\gh\n\n\n')
-        s = self.create_screen()
+        self.ae(as_text(s, True), f'{sgr0}a{hl("moo", "foo")}bcde{sgr0}f{hl()}gh\n\n\n')
+        s.reset()
         s.draw('a')
         set_link('moo')
         s.draw('bcdef')
-        self.ae(as_text(s, True), '\x1b[ma\x1b]8;;moo\x1b\\bcde\x1b[mf\n\n\n\x1b]8;;\x1b\\')
+        self.ae(as_text(s, True), f'{sgr0}a{hl("moo")}bcde{sgr0}f{hl()}\n\n\n')
 
     def test_wrapping_serialization(self):
         from kitty.window import as_text
@@ -984,6 +999,21 @@ class TestScreen(BaseTest):
         s.draw('x')
         s.set_marker(marker_from_function(mark_x))
         self.ae(s.marked_cells(), [(2, 0, 1), (4, 0, 2)])
+        # Test CJK/wide characters not at position 0 (issue #9705)
+        s = self.create_screen(cols=20)
+        s.draw('テスト世界')
+        s.set_marker(marker_from_regex('テ', 3))
+        self.ae(s.marked_cells(), cells(0, 1))
+        s.set_marker(marker_from_regex('世', 3))
+        self.ae(s.marked_cells(), cells(6, 7))
+        s.set_marker(marker_from_text('世界', 3))
+        self.ae(s.marked_cells(), cells(6, 7, 8, 9))
+        s = self.create_screen(cols=20)
+        s.draw('ABテCD世EF')
+        s.set_marker(marker_from_regex('テ', 3))
+        self.ae(s.marked_cells(), cells(2, 3))
+        s.set_marker(marker_from_regex('世', 3))
+        self.ae(s.marked_cells(), cells(6, 7))
 
     def test_hyperlinks(self):
         s = self.create_screen()
@@ -1578,7 +1608,8 @@ class TestScreen(BaseTest):
         q({k: '?' for k in 'background foreground 213 unknown'.split()}, {
             'background': defaults.background, 'foreground': defaults.foreground, '213': defaults.color213, 'unknown': '?'})
         q({'background':'aquamarine'})
-        q({'background':'?', 'selection_background': '?'}, {'background': color_names['aquamarine'], 'selection_background': s.color_profile.highlight_bg})
+        q({'background':'?', 'selection_background': '?'}, {
+            'background': Color.parse_color('Aquamarine'), 'selection_background': s.color_profile.highlight_bg})
         q({'selection_background': ''})
         self.assertIsNone(s.color_profile.highlight_bg)
         q({'selection_background': '?'}, {'selection_background': ''})
@@ -1695,3 +1726,4 @@ def detect_url(self, scale=1):
     t('http://[::1]:8080/x', after='[')  # ]
     t('http://[::1]:8080/x]y34', expected='http://[::1]:8080/x')
     t('https://wraps-by-one-char.com[]/x', after='[')  # ]
+    t('https://t.me/#1_*_*_*_*')

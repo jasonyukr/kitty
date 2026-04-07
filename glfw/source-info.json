@@ -88,7 +88,8 @@
       "staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml",
       "staging/xdg-system-bell/xdg-system-bell-v1.xml",
       "staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml",
-      "staging/color-management/color-management-v1.xml",
+      "staging/ext-background-effect/ext-background-effect-v1.xml",
+      "staging/xdg-toplevel-drag/xdg-toplevel-drag-v1.xml",
 
       "kwin-blur-v1.xml",
       "wlr-layer-shell-unstable-v1.xml"
@@ -110,6 +111,7 @@
       "linux_joystick.c",
       "linux_desktop_settings.c",
       "null_joystick.c",
+      "momentum-scroll.c",
       "linux_notify.c"
     ]
   },
@@ -169,6 +171,7 @@
       "linux_joystick.c",
       "null_joystick.c",
       "linux_desktop_settings.c",
+      "momentum-scroll.c",
       "linux_notify.c"
     ]
   }
