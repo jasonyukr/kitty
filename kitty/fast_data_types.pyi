@@ -14,6 +14,7 @@ from kitty.typing_compat import EdgeLiteral, NotRequired, ReadableBuffer, Writea
 
 # Constants {{{
 SCALE_BITS: int
+NULL_COLOR_VALUE: int
 WIDTH_BITS: int
 SUBSCALE_BITS: int
 COLOR_IS_SPECIAL: int
@@ -51,6 +52,7 @@ MOUSE_SELECTION_EXTEND: int
 MOUSE_SELECTION_NORMAL: int
 MOUSE_SELECTION_WORD: int
 MOUSE_SELECTION_RECTANGLE: int
+MOUSE_SELECTION_LINE_FROM_BEGIN: int
 MOUSE_SELECTION_LINE_FROM_POINT: int
 MOUSE_SELECTION_UPTO_SURROUNDING_WHITESPACE: int
 MOUSE_SELECTION_WORD_AND_LINE_FROM_POINT: int
@@ -326,6 +328,7 @@ WINDOW_MAXIMIZED: int
 WINDOW_MINIMIZED: int
 WINDOW_HIDDEN: int
 TEXT_SIZE_CODE: int
+DND_CODE: int
 TOP_EDGE: int
 BOTTOM_EDGE: int
 LEFT_EDGE: int
@@ -420,6 +423,7 @@ class FontConfigPattern(TypedDict):
     scalable: bool
     outline: bool
     color: bool
+    matrix: tuple[float, float, float, float]
     variable: bool
     named_instance: bool
 
@@ -725,6 +729,8 @@ def set_background_image(
     linear: bool | None = None,
     tint: float | None = None,
     tint_gaps: float | None = None,
+    global_index: int = -1,
+    is_increment: bool = False,
 ) -> None:
     pass
 
@@ -867,7 +873,8 @@ class ColorProfile:
     def reset_color(self, num: int) -> None:
         pass
 
-    def reload_from_opts(self, opts: Optional[Options] = None) -> None: ...
+    def reload_from_opts(self, opts: Optional[Options] = None, reset_overriden_colors: bool = True) -> None: ...
+    def palette_color_is_generated(self, idx: int) -> None: ...
 
     def get_transparent_background_color(self, index: int) -> Color | None: ...
     def set_transparent_background_color(self, index: int, color: Color | None = None, opacity: float | None = None) -> None: ...
@@ -1255,6 +1262,8 @@ class Screen:
     def test_parse_written_data(self, dump_callback: None = None) -> None: ...
     def hyperlink_for_id(self, hyperlink_id: int) -> str: ...
     def erase_last_command(self, include_prompt: bool = True) -> bool: ...
+    def set_progress(self, state: int, percent: int) -> None: ...
+    def mark_potential_url_drag(self) -> bool: ...
 
     def cursor_at_prompt(self) -> bool:
         pass
@@ -1320,6 +1329,9 @@ class Screen:
         pass
 
     def scroll(self, amt: int, upwards: bool) -> bool:
+        pass
+
+    def scroll_to_absolute(self, amt: float) -> None:
         pass
 
     def fractional_scroll(self, amt: float) -> bool:
@@ -1536,6 +1548,9 @@ def spawn(
     pass
 
 
+def set_window_drag_overlay(os_window_id: int, tab_id: int, window_id: int, quadrant: int) -> None: ...
+
+
 def set_window_padding(os_window_id: int, tab_id: int, window_id: int, left: int, top: int, right: int, bottom: int) -> None:
     pass
 
@@ -1619,6 +1634,10 @@ def redirect_mouse_handling(yes: bool) -> None:
 
 
 def get_click_interval() -> float:
+    pass
+
+
+def glfw_get_keyboard_repeat_interval() -> float:
     pass
 
 
@@ -1765,6 +1784,7 @@ def base64_decode(src: Union[str, ReadableBuffer]) -> bytes: ...
 def base64_decode_into(src: Union[str, ReadableBuffer], output: WriteableBuffer) -> int: ...
 def cocoa_recreate_global_menu() -> None: ...
 def cocoa_clear_global_shortcuts() -> None: ...
+def cocoa_get_machine_id() -> str: ...
 def update_pointer_shape(os_window_id: int) -> None: ...
 def is_layer_shell_supported() -> bool: ...
 def os_window_focus_counters() -> Dict[int, int]: ...
@@ -1815,7 +1835,7 @@ class StreamingBase64Decoder:
     def needs_more_data(self) -> bool: ...
 
 
-class StreamingBase64Encodeer:
+class StreamingBase64Encoder:
     def __init__(self, add_trailing_bytes: bool = True) -> None: ...
     # encode the specified data
     def encode(self, data: ReadableBuffer) -> bytes: ...
@@ -1830,9 +1850,11 @@ def start_drag_with_data(
     operations: int = GLFW_DRAG_OPERATION_MOVE
 ) -> None: ...
 def change_drag_thumbnail(os_window_id: int, idx: int = -1) -> None: ...
-def draw_single_line_of_text(os_window_id: int, text: str, fg: int, bg: int, width: int, padding_y: int = 2) -> bytes: ...
+def draw_single_line_of_text(os_window_id: int, text: str, fg: int, bg: int, width: int, padding_y: int = 2, max_width: bool = False) -> tuple[bytes, int]: ...
 def set_tab_being_dragged(tab_id: int = 0, drag_started: bool = False, x: float = 0, y: float = 0) -> None: ...
 def get_tab_being_dragged() -> tuple[int, bool, float, float]: ...
+def set_window_being_dragged(window_id: int = 0, drag_started: bool = False, x: float = 0.0, y: float = 0.0) -> None: ...
+def get_window_being_dragged() -> tuple[int, bool, float, float]: ...
 def request_callback_with_thumbnail(
         callback: str, os_window_id: int, window_id: int = 0, include_tab_bar: bool = False,
         scale: float = 0.25, max_width: int = 480

@@ -24,6 +24,9 @@ SW = ''
 
 
 def do_print_crash_reports() -> None:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    time.sleep(2)
     print('Printing available crash reports...')
     if is_macos:
         end_time = time.monotonic() + 90
@@ -111,7 +114,7 @@ def install_deps() -> None:
             run('brew', 'install', 'fish', openssl, *items)
     else:
         run('sudo apt-get update')
-        run('sudo apt-get install -y libgl1-mesa-dev libxi-dev libxrandr-dev libxinerama-dev ca-certificates'
+        run('sudo apt-get install -y --fix-missing libgl1-mesa-dev libxi-dev libxrandr-dev libxinerama-dev ca-certificates'
             ' libxcursor-dev libxcb-xkb-dev libdbus-1-dev libxkbcommon-dev libharfbuzz-dev libx11-xcb-dev zsh'
             ' libpng-dev liblcms2-dev libfontconfig-dev libxkbcommon-x11-dev libcanberra-dev libxxhash-dev uuid-dev'
             ' libsimde-dev libsystemd-dev libcairo2-dev zsh bash dash systemd-coredump gdb')
@@ -227,6 +230,9 @@ IGNORED_DEPENDENCY_CVES = [
     'CVE-2026-2297',
     'CVE-2026-3644',
     'CVE-2026-4224',
+    'CVE-2026-4519',
+    'CVE-2026-1502',
+    'CVE-2026-7210',  # DoS in unused XML parser
     # github.com/nwaples/rardecode/v2
     'CVE-2025-11579', # rardecode is version 2.2.1, not vulnerable
     'CVE-2026-2673',  # openssl fix not released

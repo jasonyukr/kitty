@@ -7,7 +7,7 @@ import re
 import sys
 import weakref
 from collections import deque
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from enum import Enum, IntEnum, auto
 from functools import lru_cache, partial
@@ -19,7 +19,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Deque,
-    Iterator,
     Literal,
     NamedTuple,
     Optional,
@@ -48,7 +47,9 @@ from .fast_data_types import (
     GLFW_PRESS,
     GLFW_RELEASE,
     GLFW_REPEAT,
+    MOUSE_SELECTION_NORMAL,
     NO_CURSOR_SHAPE,
+    NULL_COLOR_VALUE,
     SCROLL_FULL,
     SCROLL_LINE,
     SCROLL_PAGE,
@@ -64,12 +65,14 @@ from .fast_data_types import (
     click_mouse_cmd_output,
     click_mouse_url,
     current_focused_os_window_id,
+    draw_single_line_of_text,
     encode_key_for_tty,
     get_boss,
     get_click_interval,
     get_mouse_data_for_window,
     get_options,
     get_window_logo_settings_if_not_default,
+    glfw_get_keyboard_repeat_interval,
     is_css_pointer_name_valid,
     is_modifier_key,
     last_focused_os_window_id,
@@ -79,12 +82,14 @@ from .fast_data_types import (
     move_cursor_to_mouse_if_in_prompt,
     pointer_name_to_css_name,
     pt_to_px,
+    remove_timer,
     replace_c0_codes_except_nl_space_tab,
     set_redirect_keys_to_overlay,
     set_window_logo,
     set_window_padding,
     set_window_render_data,
     set_window_title_bar_render_data,
+    start_drag_with_data,
     update_ime_position_for_window,
     update_pointer_shape,
     update_window_title,
@@ -119,6 +124,15 @@ from .utils import (
 )
 
 MatchPatternType = Union[Pattern[str], tuple[Pattern[str], Optional[Pattern[str]]]]
+
+
+class ScrollAnimation:
+    timer: int = 0
+    start: float = 0.
+    duration: float = 0.
+    total: float = 0.
+    start_scrolled_by: int = 0
+    frame_interval: float = 1.0 / 60.0  # Target ~60 fps for scroll animation ticks
 
 
 if TYPE_CHECKING:
@@ -244,6 +258,7 @@ class WindowDict(TypedDict):
     cmdline: list[str]
     last_reported_cmdline: str
     last_cmd_exit_status: int
+    last_focused_at: float
     env: dict[str, str]
     foreground_processes: list[ProcessDesc]
     is_self: bool
@@ -254,6 +269,9 @@ class WindowDict(TypedDict):
     created_at: int
     in_alternate_screen: bool
     neighbors: NeighborsMap
+    session_name: str
+    needs_attention: bool
+    has_activity_since_last_focus: bool
 
 
 class PipeData(TypedDict):
@@ -576,9 +594,13 @@ def color_control(cp: ColorProfile, code: int, value: str | bytes | memoryview =
                 else:
                     if 0 <= colnum <= 255:
                         val = val.partition('@')[0]
-                        col = to_color(val)
-                        if col is not None:
-                            cp.set_color(colnum, color_as_int(col))
+                        if val:
+                            if (col := to_color(val)) is not None:
+                                cp.set_color(colnum, color_as_int(col))
+                        elif colnum > 15:
+                            cp.set_color(colnum, NULL_COLOR_VALUE)
+                        else:
+                            cp.set_color(colnum, get_options().color_table[colnum])
         else:
             if attr:
                 delattr(cp, attr)
@@ -667,6 +689,7 @@ class Window:
     created_in_session_name: str = ''
     serialized_id: int = 0
     show_title_bar: bool = False  # must be set before calling set_geometry
+    is_drag_target: bool = False  # highlight this window's title bar as a drop target
 
     @classmethod
     @contextmanager
@@ -752,6 +775,7 @@ class Window:
             self.screen.copy_colors_from(copy_colors_from.screen)
         self.remote_control_passwords = remote_control_passwords
         self.allow_remote_control = allow_remote_control
+        self.scroll_animation = ScrollAnimation()
 
     def remote_control_allowed(self, pcmd: dict[str, Any], extra_data: dict[str, Any]) -> bool:
         if not self.allow_remote_control:
@@ -1076,7 +1100,7 @@ class Window:
 
         data = WindowTitleData(
             title=self.title or '',
-            is_active=is_active,
+            is_active=is_active or self.is_drag_target,
             window_id=self.id,
             tab_id=self.tab_id,
             needs_attention=self.needs_attention,
@@ -1261,6 +1285,7 @@ class Window:
                 log_error(f'Ignoring malformed OSC 9;4 progress report: {raw_data!r}')
                 return
             self.progress.update(*parts[:2])
+            self.screen.set_progress(self.progress.state.value, self.progress.percent)
             if (tab := self.tabref()) is not None:
                 tab.update_progress()
             self.clear_progress_if_needed()
@@ -1272,6 +1297,7 @@ class Window:
         if timer_id is not None:  # this is a timer callback
             self.clear_progress_timer = 0
         if self.progress.clear_progress():
+            self.screen.set_progress(0, 0)
             if (tab := self.tabref()) is not None:
                 tab.update_progress()
         else:
@@ -1286,6 +1312,25 @@ class Window:
         if action is None:
             return False
         return get_boss().combine(action, window_for_dispatch=self, dispatch_type='MouseEvent')
+
+    def drag_url(self, url: str, hyperlink_id: int) -> None:
+        if not url:
+            return
+        if url.startswith('/'):
+            from urllib.parse import quote
+            url = 'file://' + quote(os.path.abspath(url))
+        fg = color_as_int(self.screen.color_profile.default_fg)
+        bg = color_as_int(self.screen.color_profile.default_bg)
+        width = self.geometry.right - self.geometry.left
+        pixels, width = draw_single_line_of_text(
+            self.os_window_id, f' {url} ', 0xff000000 | fg, 0xff000000 | bg, width, max_width=True)
+        height = len(pixels) // (width * 4)
+        thumbnails = ((pixels, width, height),)
+        drag_data = {'text/uri-list': (url + '\r\n').encode()}
+        try:
+            start_drag_with_data(self.os_window_id, drag_data, thumbnails)
+        except OSError as e:
+            log_error(f'Failed to start URL drag: {e}')
 
     def open_url(self, url: str, hyperlink_id: int, cwd: str | None = None) -> None:
         boss = get_boss()
@@ -1450,7 +1495,11 @@ class Window:
         self.screen.send_escape_code_to_child(ESC_OSC, f'{code};rgb:{r:04x}/{g:04x}/{b:04x}')
 
     def on_reset(self) -> None:
-        pass
+        from .progress import ProgressState
+        if self.progress.state is not ProgressState.unset:
+            self.progress.update(0)  # unset
+            if (tab := self.tabref()) is not None:
+                tab.update_progress()
 
     def notify_child_of_resize(self) -> None:
         pty_size = self.last_reported_pty_size
@@ -1632,7 +1681,8 @@ class Window:
             if ac == 'ask':
                 get_boss().confirm(_(
                     'A program running in this window wants to clone it into another window.'
-                    ' Allow it do so, once?'),
+                    ' WARNING: cloning a window is unsafe, as it allows arbitrary code execution,'
+                    ' only accept this request if you trust the environment you are cloning. Allow the clone, once?'),
                     partial(self.handle_remote_clone_confirmation, cdata), window=self,
                     title=_('Allow cloning of window?'),
                 )
@@ -1661,16 +1711,20 @@ class Window:
                 shm.write(b'\x01')
 
         message: str = data['message']
+        window_title = 'A program wants your input'
         if data['type'] == 'confirm':
             get_boss().confirm(
                 message, callback, window=self, confirm_on_cancel=bool(data.get('confirm_on_cancel')),
-                confirm_on_accept=bool(data.get('confirm_on_accept', True)))
+                confirm_on_accept=bool(data.get('confirm_on_accept', True)), title=window_title)
         elif data['type'] == 'choose':
             get_boss().choose(
-                message, callback, *data['choices'], window=self, default=data.get('default', ''))
+                message, callback, *data['choices'], window=self, default=data.get('default', ''), title=window_title)
         elif data['type'] == 'get_line':
+            which = 'password' if data.get('is_password') else 'input'
+            message = f'\x1b[33mA program running in this window is asking for your {which}\x1b[m\n\n{message}'
             get_boss().get_line(
-                message, callback, window=self, is_password=bool(data.get('is_password')), prompt=data.get('prompt', '> '))
+                message, callback, window=self, is_password=bool(data.get('is_password')),
+                prompt=data.get('prompt', '> '), window_title=window_title)
         else:
             log_error(f'Ignoring ask request with unknown type: {data["type"]}')
 
@@ -1814,6 +1868,10 @@ class Window:
         For examples, see :ref:`conf-kitty-mouse.mousemap`
         ''')
     def mouse_selection(self, code: int) -> None:
+        if code == MOUSE_SELECTION_NORMAL - 1:
+            code = MOUSE_SELECTION_NORMAL
+            if self.screen.mark_potential_url_drag():
+                return
         mouse_selection(self.os_window_id, self.tab_id, self.id, code, self.current_mouse_event_button)
 
     @ac('mouse', 'Paste the current primary selection')
@@ -2095,6 +2153,7 @@ class Window:
             'cmdline': self.child.cmdline,
             'last_reported_cmdline': self.last_cmd_cmdline,
             'last_cmd_exit_status': self.last_cmd_exit_status,
+            'last_focused_at': self.last_focused_at,
             'env': self.child.environ or self.child.final_env,
             'foreground_processes': self.child.foreground_processes,
             'is_self': is_self,
@@ -2105,6 +2164,9 @@ class Window:
             'created_at': self.created_at,
             'in_alternate_screen': self.screen.is_using_alternate_linebuf(),
             'neighbors': neighbors_map,
+            'session_name': self.created_in_session_name,
+            'needs_attention': self.needs_attention,
+            'has_activity_since_last_focus': self.has_activity_since_last_focus,
         }
 
     def serialize_state(self) -> dict[str, Any]:
@@ -2379,27 +2441,87 @@ class Window:
     def scroll_fractional_lines(self, amt: float) -> bool | None:
         ' Scroll fractionally, negative values are up and positive values are down '
         if self.screen.is_main_linebuf():
+            self.finish_scroll_animation()
             self.screen.fractional_scroll(amt)
             return None
         return True
 
-    @ac('sc', 'Scroll up by one line when in main screen. To scroll by different amounts, you can map the remote_control scroll-window action.')
-    def scroll_line_up(self) -> bool | None:
+    def scroll_animation_tick(self, timer_id: int | None) -> None:
+        a = self.scroll_animation
+        if not a.timer:
+            return
+        now = monotonic()
+        elapsed = now - a.start
+        progress = min(1.0, elapsed / a.duration) if a.duration > 0 else 1.0
+        if progress >= 1.0:
+            # Ensure we land exactly on a line boundary with pixel_scroll_offset_y = 0
+            self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
+            a.timer = 0
+        else:
+            # Use absolute positioning to avoid pixel rounding errors from incremental fractional scrolls
+            self.screen.scroll_to_absolute(max(0.0, a.start_scrolled_by - a.total * progress))
+
+    def finish_scroll_animation(self) -> None:
+        ' Finish any in-progress scroll animation immediately '
+        a = self.scroll_animation
+        if a.timer:
+            remove_timer(a.timer)
+            a.timer = 0
+            # Scroll to the exact integer target line, ensuring pixel_scroll_offset_y = 0
+            self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
+
+    def start_scroll_animation(self, lines: float) -> None:
+        ' Start a smooth scroll animation for the given number of lines (negative=up, positive=down) '
+        self.finish_scroll_animation()
+        if not self.screen.is_main_linebuf():
+            return
+        duration = glfw_get_keyboard_repeat_interval()
+        if duration <= 0:
+            self.screen.fractional_scroll(lines)
+            return
+        a = self.scroll_animation
+        a.start = monotonic()
+        a.duration = duration
+        a.total = lines
+        a.start_scrolled_by = self.screen.scrolled_by
+        a.timer = add_timer(self.scroll_animation_tick, min(ScrollAnimation.frame_interval, duration / 2), True)
+
+    @ac('sc', '''
+        Scroll up by one line when in main screen. To scroll by different amounts, you can map the remote_control
+        scroll-window action. Pass the ``smooth`` argument to have the scrolling be animated. For example::
+
+            map kitty_mod+up scroll_line_up smooth
+        ''')
+    def scroll_line_up(self, smooth: bool = False) -> bool | None:
         if self.screen.is_main_linebuf():
-            self.screen.scroll(SCROLL_LINE, True)
+            if smooth:
+                self.start_scroll_animation(-1.0)
+            else:
+                self.finish_scroll_animation()
+                self.screen.scroll(SCROLL_LINE, True)
             return None
         return True
 
-    @ac('sc', 'Scroll down by one line when in main screen. To scroll by different amounts, you can map the remote_control scroll-window action.')
-    def scroll_line_down(self) -> bool | None:
+    @ac('sc', '''
+        Scroll down by one line when in main screen. To scroll by different amounts, you can map the remote_control
+        scroll-window action. Pass the ``smooth`` argument to have the scrolling be animated. For example::
+
+            map kitty_mod+down scroll_line_down smooth
+        ''')
+    def scroll_line_down(self, smooth: bool = False) -> bool | None:
         if self.screen.is_main_linebuf():
-            self.screen.scroll(SCROLL_LINE, False)
+            if smooth:
+                self.start_scroll_animation(1.0)
+            else:
+                self.finish_scroll_animation()
+                self.screen.scroll(SCROLL_LINE, False)
             return None
         return True
 
     @ac('sc', 'Scroll up by one page when in main screen. To scroll by different amounts, you can map the remote_control scroll-window action.')
     def scroll_page_up(self) -> bool | None:
         if self.screen.is_main_linebuf():
+            self.finish_scroll_animation()
             self.screen.scroll(SCROLL_PAGE, True)
             return None
         return True
@@ -2407,6 +2529,7 @@ class Window:
     @ac('sc', 'Scroll down by one page when in main screen. To scroll by different amounts, you can map the remote_control scroll-window action.')
     def scroll_page_down(self) -> bool | None:
         if self.screen.is_main_linebuf():
+            self.finish_scroll_animation()
             self.screen.scroll(SCROLL_PAGE, False)
             return None
         return True
@@ -2414,6 +2537,7 @@ class Window:
     @ac('sc', 'Scroll to the top of the scrollback buffer when in main screen')
     def scroll_home(self) -> bool | None:
         if self.screen.is_main_linebuf():
+            self.finish_scroll_animation()
             self.screen.scroll(SCROLL_FULL, True)
             return None
         return True
@@ -2421,6 +2545,7 @@ class Window:
     @ac('sc', 'Scroll to the bottom of the scrollback buffer when in main screen')
     def scroll_end(self) -> bool | None:
         if self.screen.is_main_linebuf():
+            self.finish_scroll_animation()
             self.screen.scroll(SCROLL_FULL, False)
             return None
         return True
@@ -2446,6 +2571,7 @@ class Window:
         ''')
     def scroll_to_prompt(self, num_of_prompts: int = -1, scroll_offset: int = 0) -> bool | None:
         if self.screen.is_main_linebuf():
+            self.finish_scroll_animation()
             self.screen.scroll_to_prompt(num_of_prompts, scroll_offset)
             return None
         return True

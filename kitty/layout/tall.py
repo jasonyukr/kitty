@@ -15,6 +15,7 @@ from kitty.window_list import WindowGroup, WindowList
 
 from .base import (
     BorderLine,
+    DragOverlayMode,
     Layout,
     LayoutData,
     LayoutDimension,
@@ -136,6 +137,7 @@ class Tall(Layout):
     name = 'tall'
     main_is_horizontal = True
     no_minimal_window_borders = True
+    drag_overlay_mode = DragOverlayMode.axis_y
     layout_opts = TallLayoutOpts({})
     main_axis_layout = Layout.xlayout
     perp_axis_layout = Layout.ylayout
@@ -381,5 +383,6 @@ class Fat(Tall):
 
     name = 'fat'
     main_is_horizontal = False
+    drag_overlay_mode = DragOverlayMode.axis_x
     main_axis_layout = Layout.ylayout
     perp_axis_layout = Layout.xlayout

@@ -12,7 +12,7 @@ from kitty.options.utils import pointer_shape_names
 definition = Definition(
     'kitty',
     Action('map', 'parse_map', {'keyboard_modes': 'KeyboardModeMap', 'alias_map': 'AliasMap'},
-           ['KeyDefinition', 'kitty.fast_data_types.SingleKey']),
+           ['KeyDefinition', 'KeyMapOptions', 'kitty.fast_data_types.SingleKey']),
     Action('mouse_map', 'parse_mouse_map', {'mousemap': 'MouseMap'}, ['MouseMapping']),
     has_color_table=True,
 )
@@ -519,6 +519,23 @@ use the current selection background color. Also, you can use an
 arbitrary color, such as :code:`#12af59` or :code:`red`.
 ''')
 
+opt('progress_bar', 'top', ctype='progress_bar', choices=('left', 'right', 'top', 'bottom', 'hidden'), long_text='''\
+When a program uses the OSC 9;4 escape sequence to report progress, draw a progress bar
+in the specified position of the window. The bar uses the same style and color settings
+as the scrollbar .
+
+:code:`left`
+    a vertical progress bar on the left edge
+:code:`right`
+    a vertical progress bar on the right edge
+:code:`top`
+    a horizontal progress bar on the top edge
+:code:`bottom`
+    a horizontal progress bar on the bottom edge
+:code:`hidden`
+    dont show the progress bar
+''')
+
 opt('scrollback_pager', 'less --chop-long-lines --RAW-CONTROL-CHARS +INPUT_LINE_NUMBER',
     option_type='to_cmdline',
     long_text='''
@@ -714,11 +731,15 @@ a double backslash.
 '''
     )
 
-opt('show_hyperlink_targets', 'no',
-    option_type='to_bool', ctype='bool',
+opt('show_hyperlink_targets', 'never', option_type='show_hyperlink_targets',
+    ctype='show_hyperlink_targets',
     long_text='''
 When the mouse hovers over a terminal hyperlink, show the actual URL that will
-be activated when the hyperlink is clicked.
+be activated when the hyperlink is clicked. Set to :code:`ctrl`, :code:`cmd`, :code:`alt` or
+:code:`shift` to show only while the corresponding modifier key is pressed
+(:kbd:`Ctrl`, :kbd:`Super` (macOS :kbd:`Cmd`), :kbd:`Shift`). If multiple modifiers
+are pressed, the URL is shown as long as the configured modifier is among them.
+:code:`always` to always show, or :code:`never` to never show.
 ''')
 
 
@@ -834,11 +855,15 @@ fallback to 0.5.
     )
 
 opt('focus_follows_mouse', 'no',
-    option_type='to_bool', ctype='bool',
+    choices=('no', 'n', 'false', 'y', 'yes', 'true', 'drop'), ctype='!focus_follows_mouse',
     long_text='''
-Set the active window to the window under the mouse when moving the mouse around.
+Set the active window to the window under the mouse when the mouse crosses
+into a different window. The active window does not change while the mouse
+moves around within a single window, so an accidental mouse bump will not
+undo a keyboard-driven window switch. Setting it to :code:`drop` means
+focus will only be changed when a drag and drop happens in a window.
 On macOS, this will also cause the OS Window under the mouse to be focused automatically when the
-mouse enters it.
+mouse enters it, as long as the kitty application is the active application.
 '''
     )
 
@@ -863,6 +888,19 @@ sets the shape when dragging in rectangular selection mode.
 '''
     )
 
+opt('drag_threshold', '5', option_type='positive_int', ctype='int', long_text='''
+The threshold distance the mouse must move to start a drag and drop. Dragging
+works for tabs and windows. You can drag tabs to re-order them, detach
+them into new OS Windows or move them to another OS Window. Similarly,
+by dragging the titlebar of a window (see :ac:`toggle_window_title_bars`)
+you can re-order it in its layout, detach it or move it to another tab.
+A value of zero disables all dragging.
+
+Note that on Wayland, :link:`because of poor design
+<https://gitlab.freedesktop.org/wayland/wayland/-/issues/140>` cancelling
+a drag will detach the tab. This is worked around for compositors that support
+:link:`xdg-toplevel-drag <https://wayland.app/protocols/xdg-toplevel-drag-v1>`.
+''')
 
 # mouse.mousemap {{{
 agr('mouse.mousemap', 'Mouse actions', '''
@@ -954,6 +992,12 @@ mma('Paste from the primary selection',
 
 mma('Start selecting text',
     'start_simple_selection left press ungrabbed mouse_selection normal',
+    long_text='''
+If you would like to drag and drop hyperlinks or detected URLs, instead of
+:code:`normal` use :code:`drag_or_normal_select`, then if a hyperlink is under
+the mouse it will be dragged based on :opt:`drag_threshold` otherwise a normal
+selection will be performed.
+'''
     )
 
 mma('Start selecting text in a rectangle',
@@ -966,6 +1010,10 @@ mma('Select a word',
 
 mma('Select a line',
     'select_line left triplepress ungrabbed mouse_selection line',
+    )
+
+mma('Select line from first cell',
+    'select_line_from_begin alt+left triplepress ungrabbed mouse_selection line_from_begin',
     )
 
 mma('Select line from point',
@@ -1013,6 +1061,10 @@ mma('Select a word even when grabbed',
 
 mma('Select a line even when grabbed',
     'select_line_grabbed shift+left triplepress ungrabbed,grabbed mouse_selection line',
+    )
+
+mma('Select line from first cell even when grabbed',
+    'select_line_from_begin_grabbed shift+alt+left triplepress ungrabbed,grabbed mouse_selection line_from_begin',
     )
 
 mma('Select line from point even when grabbed',
@@ -1346,12 +1398,17 @@ opt('bell_border_color', '#ff5a00',
     )
 
 opt('inactive_text_alpha', '1.0',
-    option_type='unit_float', ctype='float',
+    option_type='signed_unit_float', ctype='float',
     long_text='''
-Fade the text in inactive windows by the specified amount (a number between zero
-and one, with zero being fully faded).
-'''
-    )
+Fade the text in inactive windows by the specified amount. This must be a
+number between -1 and 1. The absolute value controls the actual
+opacity, with zero being fully faded and one being fully opaque. When a positive number is
+used the text is faded even if only a single window is visible when the OS window
+is not focused. Negative numbers means that text is only faded when more than one kitty window
+is visible in an OS Window. Fading happens in all but the active window, even if the OS Window
+is not focused. Thus this is useful if you want to rely on the window manager to indicate OS Window focus
+and this feature to indicate which kitty window is active insidethe OS Window.
+''')
 
 opt('hide_window_decorations', 'no',
     option_type='hide_window_decorations', ctype='uint',
@@ -1550,6 +1607,7 @@ opt('window_title_bar_align', 'center',
     choices=('left', 'center', 'right'),
     long_text='Horizontal alignment of the text in window title bars.'
     )
+
 egr()  # }}}
 
 
@@ -1622,6 +1680,15 @@ opt('tab_bar_align', 'left',
     long_text='''
 The horizontal alignment of the tab bar, can be one of: :code:`left`,
 :code:`center`, :code:`right`.
+'''
+    )
+
+opt('tab_bar_show_new_tab_button', 'no', option_type='to_bool', long_text='''
+When set to :code:`yes`, a :code:`+` button is always shown at the end of the
+tab bar as a clickable shortcut to open a new tab. When set to :code:`no`
+(the default), the button is hidden at rest but still appears temporarily
+while a window is being dragged, so it can be used as a drop target to open
+the window in a new tab.
 '''
     )
 
@@ -1800,23 +1867,6 @@ the window is translucent, in which case the default background is used as it
 looks better.
 ''')
 
-opt(
-    'tab_bar_drag_threshold',
-    '5',
-    option_type='positive_int',
-    long_text="""
-Control when dragging of tabs to re-order them happens.
-The value is the drag threshold in pixels, the distance the mouse must move
-before a drag begins. A value of zero disables tab dragging entirely.
-Dragging a tab to another kitty window moves it there, while dragging
-outside any kitty window detaches it into a new OS window.
-
-Note that on Wayland, :link:`because of poor design
-<https://gitlab.freedesktop.org/wayland/wayland/-/issues/140>` cancelling
-a drag will detach the tab. This is worked around for compositors that support
-:link:`xdg-toplevel-drag <https://wayland.app/protocols/xdg-toplevel-drag-v1>`.
-""",
-)
 egr()  # }}}
 
 
@@ -1907,8 +1957,13 @@ this option by reloading the config is not supported.
 
 
 opt('background_image', 'none',
-    option_type='config_or_absolute_path', ctype='!background_image',
-    long_text='Path to a background image. Must be in PNG/JPEG/WEBP/TIFF/GIF/BMP format.'
+    option_type='background_images', ctype='!background_images',
+    long_text='Glob pattern matching one or more background images. Must be in PNG/JPEG/WEBP/TIFF/GIF/BMP format.'
+    ' The first one is used as the default image.'
+    ' Multiple images are stored in GPU VRAM (on demand) so that transitioning between them is instant.'
+    ' In order to move between images in the list of background images, use the remote control command'
+    ' :code:`set-background-image`, see `kitten set-background-image --help` for details. You can map the command'
+    ' to a key like this: :code:`map f1 remote_control set-background-image +1`.'
     ' Note that when using :ref:`auto_color_scheme` this option is overridden by the color scheme file and must be set inside it to take effect.'
     )
 
@@ -1975,6 +2030,17 @@ opt('selection_background', '#fffacd',
     option_type='to_color_or_none',
     )
 
+opt('palette_generate', 'fixed', choices=('fixed', 'semantic', 'legacy'), long_text='''
+How to fill in any colors that are unset (set to :code:`none`) in the 256-color palette.
+By default, for legacy compatibility, these are set to the fixed set of values used by historic terminals.
+
+Instead, you can have kitty :link:`generate them based on the first 16 colors <https://gist.github.com/jake-stewart/0a8ea46159a7da2c808e5be2177e1783>`.
+
+The value :code:`semantic` means use an algorithm that gives good readability in light themes
+but changes the meaning of some colors compared to the fixed color encoding. The value
+:code:`legacy` gives worse readability in light themes but less deviation from the fixed
+color encoding.
+''')
 
 # colors.table {{{
 agr('colors.table', 'The color table', '''
@@ -2085,1205 +2151,8 @@ opt('mark3_background', '#f274bc',
     long_text='Color for marks of type 3 (violet)'
     )
 
-opt('color16', '#000000',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color17', '#00005f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color18', '#000087',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color19', '#0000af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color20', '#0000d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color21', '#0000ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color22', '#005f00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color23', '#005f5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color24', '#005f87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color25', '#005faf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color26', '#005fd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color27', '#005fff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color28', '#008700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color29', '#00875f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color30', '#008787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color31', '#0087af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color32', '#0087d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color33', '#0087ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color34', '#00af00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color35', '#00af5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color36', '#00af87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color37', '#00afaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color38', '#00afd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color39', '#00afff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color40', '#00d700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color41', '#00d75f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color42', '#00d787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color43', '#00d7af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color44', '#00d7d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color45', '#00d7ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color46', '#00ff00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color47', '#00ff5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color48', '#00ff87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color49', '#00ffaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color50', '#00ffd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color51', '#00ffff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color52', '#5f0000',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color53', '#5f005f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color54', '#5f0087',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color55', '#5f00af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color56', '#5f00d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color57', '#5f00ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color58', '#5f5f00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color59', '#5f5f5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color60', '#5f5f87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color61', '#5f5faf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color62', '#5f5fd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color63', '#5f5fff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color64', '#5f8700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color65', '#5f875f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color66', '#5f8787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color67', '#5f87af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color68', '#5f87d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color69', '#5f87ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color70', '#5faf00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color71', '#5faf5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color72', '#5faf87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color73', '#5fafaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color74', '#5fafd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color75', '#5fafff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color76', '#5fd700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color77', '#5fd75f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color78', '#5fd787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color79', '#5fd7af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color80', '#5fd7d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color81', '#5fd7ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color82', '#5fff00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color83', '#5fff5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color84', '#5fff87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color85', '#5fffaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color86', '#5fffd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color87', '#5fffff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color88', '#870000',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color89', '#87005f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color90', '#870087',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color91', '#8700af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color92', '#8700d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color93', '#8700ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color94', '#875f00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color95', '#875f5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color96', '#875f87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color97', '#875faf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color98', '#875fd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color99', '#875fff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color100', '#878700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color101', '#87875f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color102', '#878787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color103', '#8787af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color104', '#8787d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color105', '#8787ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color106', '#87af00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color107', '#87af5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color108', '#87af87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color109', '#87afaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color110', '#87afd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color111', '#87afff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color112', '#87d700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color113', '#87d75f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color114', '#87d787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color115', '#87d7af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color116', '#87d7d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color117', '#87d7ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color118', '#87ff00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color119', '#87ff5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color120', '#87ff87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color121', '#87ffaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color122', '#87ffd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color123', '#87ffff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color124', '#af0000',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color125', '#af005f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color126', '#af0087',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color127', '#af00af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color128', '#af00d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color129', '#af00ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color130', '#af5f00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color131', '#af5f5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color132', '#af5f87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color133', '#af5faf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color134', '#af5fd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color135', '#af5fff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color136', '#af8700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color137', '#af875f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color138', '#af8787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color139', '#af87af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color140', '#af87d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color141', '#af87ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color142', '#afaf00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color143', '#afaf5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color144', '#afaf87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color145', '#afafaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color146', '#afafd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color147', '#afafff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color148', '#afd700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color149', '#afd75f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color150', '#afd787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color151', '#afd7af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color152', '#afd7d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color153', '#afd7ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color154', '#afff00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color155', '#afff5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color156', '#afff87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color157', '#afffaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color158', '#afffd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color159', '#afffff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color160', '#d70000',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color161', '#d7005f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color162', '#d70087',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color163', '#d700af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color164', '#d700d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color165', '#d700ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color166', '#d75f00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color167', '#d75f5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color168', '#d75f87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color169', '#d75faf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color170', '#d75fd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color171', '#d75fff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color172', '#d78700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color173', '#d7875f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color174', '#d78787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color175', '#d787af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color176', '#d787d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color177', '#d787ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color178', '#d7af00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color179', '#d7af5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color180', '#d7af87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color181', '#d7afaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color182', '#d7afd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color183', '#d7afff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color184', '#d7d700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color185', '#d7d75f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color186', '#d7d787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color187', '#d7d7af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color188', '#d7d7d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color189', '#d7d7ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color190', '#d7ff00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color191', '#d7ff5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color192', '#d7ff87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color193', '#d7ffaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color194', '#d7ffd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color195', '#d7ffff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color196', '#ff0000',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color197', '#ff005f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color198', '#ff0087',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color199', '#ff00af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color200', '#ff00d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color201', '#ff00ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color202', '#ff5f00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color203', '#ff5f5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color204', '#ff5f87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color205', '#ff5faf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color206', '#ff5fd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color207', '#ff5fff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color208', '#ff8700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color209', '#ff875f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color210', '#ff8787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color211', '#ff87af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color212', '#ff87d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color213', '#ff87ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color214', '#ffaf00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color215', '#ffaf5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color216', '#ffaf87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color217', '#ffafaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color218', '#ffafd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color219', '#ffafff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color220', '#ffd700',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color221', '#ffd75f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color222', '#ffd787',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color223', '#ffd7af',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color224', '#ffd7d7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color225', '#ffd7ff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color226', '#ffff00',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color227', '#ffff5f',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color228', '#ffff87',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color229', '#ffffaf',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color230', '#ffffd7',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color231', '#ffffff',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color232', '#080808',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color233', '#121212',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color234', '#1c1c1c',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color235', '#262626',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color236', '#303030',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color237', '#3a3a3a',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color238', '#444444',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color239', '#4e4e4e',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color240', '#585858',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color241', '#626262',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color242', '#6c6c6c',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color243', '#767676',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color244', '#808080',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color245', '#8a8a8a',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color246', '#949494',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color247', '#9e9e9e',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color248', '#a8a8a8',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color249', '#b2b2b2',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color250', '#bcbcbc',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color251', '#c6c6c6',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color252', '#d0d0d0',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color253', '#dadada',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color254', '#e4e4e4',
-    option_type='to_color',
-    documented=False,
-    )
-
-opt('color255', '#eeeeee',
-    option_type='to_color',
-    documented=False,
-    )
+for i in range(16, 256):
+    opt(f'color{i}', 'none', option_type='to_color_or_none', documented=False)
 egr()  # }}}
 
 # colors.wide_gamut {{{
@@ -3524,6 +2393,15 @@ packages or source builds do not do update checking. Changing this option by
 reloading the config is not supported.
 '''
     )
+
+opt('auto_reload_config', '0.1', option_type='float', long_text='''
+Automatically reload configuration files when they are changed. The setting
+is the number of seconds to wait before reloading the config files. This allows
+multiple changes to be debounced. Use a negative value to disable automatic reload.
+You can manually reload with :sc:`reload_config_file`. Note that automatic
+reload works only if the :file:`kitty.conf` already exists when kitty is started.
+Changes to this setting by reloading configuration are ignored.
+''')
 
 opt('startup_session', 'none',
     option_type='config_or_absolute_path',
@@ -3770,6 +2648,8 @@ The color of the kitty window's titlebar on macOS. A value of
 :code:`background` means to use the background color of the currently active
 window and finally you can use an arbitrary color, such as :code:`#12af59` or
 :code:`red`.
+
+Note that when using :ref:`auto_color_scheme` this option is overridden by the color scheme file and must be set inside it to take effect.
 '''
     )
 
@@ -3832,6 +2712,15 @@ opt('macos_traditional_fullscreen', 'no',
     long_text='''
 Use the macOS traditional full-screen transition, that is faster, but less
 pretty.
+'''
+    )
+
+opt('macos_fullscreen_ignore_safe_area_insets', 'no',
+    option_type='to_bool', ctype='bool',
+    long_text='''
+When using :opt:`macos_traditional_fullscreen`, ignore the safe area insets on
+displays such as MacBook screens with a notch. This allows kitty to use the
+full display frame instead of leaving space for the notch area.
 '''
     )
 
@@ -3922,6 +2811,14 @@ Some quick examples to illustrate common tasks::
     # multi-key shortcuts
     map ctrl+x>ctrl+y>z action
 
+For non-Latin keyboard layouts (Russian, Arabic, etc.), the :code:`--allow-fallback`
+option controls physical key fallback. Values: :code:`shifted` (default — shifted key
+fallback), :code:`ascii` (alternate key / physical position fallback, only for non-ASCII
+keys), :code:`none` (disable all fallback), or a comma-separated combination.
+All default shortcuts use :code:`--allow-fallback=shifted,ascii`::
+
+    map --allow-fallback=shifted,ascii kitty_mod+c copy_to_clipboard
+
 You can browse and trigger these actions by pressing :sc:`command_palette` to
 run the command palette. The full list of actions that can be mapped to
 key presses is available :doc:`here </actions>`.
@@ -3994,7 +2891,7 @@ option applied.
 agr('shortcuts.clipboard', 'Clipboard')
 
 map('Copy to clipboard',
-    'copy_to_clipboard kitty_mod+c copy_to_clipboard',
+    'copy_to_clipboard --allow-fallback=shifted,ascii kitty_mod+c copy_to_clipboard',
     long_text='''
 There is also a :ac:`copy_or_interrupt` action that can be optionally mapped
 to :kbd:`Ctrl+C`. It will copy only if there is a selection and send an
@@ -4005,27 +2902,27 @@ the key through to the application running in the terminal if there is no select
 '''
     )
 map('Copy to clipboard or pass through',
-    'copy_or_noop cmd+c copy_or_noop',
+    'copy_or_noop --allow-fallback=shifted,ascii cmd+c copy_or_noop',
     only='macos',
     )
 
 map('Paste from clipboard',
-    'paste_from_clipboard kitty_mod+v paste_from_clipboard',
+    'paste_from_clipboard --allow-fallback=shifted,ascii kitty_mod+v paste_from_clipboard',
     )
 map('Paste from clipboard',
-    'paste_from_clipboard cmd+v paste_from_clipboard',
+    'paste_from_clipboard --allow-fallback=shifted,ascii cmd+v paste_from_clipboard',
     only='macos',
     )
 
 map('Paste from selection',
-    'paste_from_selection kitty_mod+s paste_from_selection',
+    'paste_from_selection --allow-fallback=shifted,ascii kitty_mod+s paste_from_selection',
     )
 map('Paste from selection',
     'paste_from_selection shift+insert paste_from_selection',
     )
 
 map('Pass selection to program',
-    'pass_selection_to_program kitty_mod+o pass_selection_to_program',
+    'pass_selection_to_program --allow-fallback=shifted,ascii kitty_mod+o pass_selection_to_program',
     long_text='''
 You can also pass the contents of the current selection to any program with
 :ac:`pass_selection_to_program`. By default, the system's open program is used,
@@ -4047,32 +2944,32 @@ egr()  # }}}
 agr('shortcuts.scrolling', 'Scrolling')
 
 map('Scroll line up',
-    'scroll_line_up kitty_mod+up scroll_line_up',
+    'scroll_line_up kitty_mod+up scroll_line_up smooth',
     )
 map('Scroll line up',
-    'scroll_line_up kitty_mod+k scroll_line_up',
+    'scroll_line_up --allow-fallback=shifted,ascii kitty_mod+k scroll_line_up smooth',
     )
 map('Scroll line up',
-    'scroll_line_up opt+cmd+page_up scroll_line_up',
+    'scroll_line_up opt+cmd+page_up scroll_line_up smooth',
     only='macos',
     )
 map('Scroll line up',
-    'scroll_line_up cmd+up scroll_line_up',
+    'scroll_line_up cmd+up scroll_line_up smooth',
     only='macos',
     )
 
 map('Scroll line down',
-    'scroll_line_down kitty_mod+down scroll_line_down',
+    'scroll_line_down kitty_mod+down scroll_line_down smooth',
     )
 map('Scroll line down',
-    'scroll_line_down kitty_mod+j scroll_line_down',
+    'scroll_line_down --allow-fallback=shifted,ascii kitty_mod+j scroll_line_down smooth',
     )
 map('Scroll line down',
-    'scroll_line_down opt+cmd+page_down scroll_line_down',
+    'scroll_line_down opt+cmd+page_down scroll_line_down smooth',
     only='macos',
     )
 map('Scroll line down',
-    'scroll_line_down cmd+down scroll_line_down',
+    'scroll_line_down cmd+down scroll_line_down smooth',
     only='macos',
     )
 
@@ -4109,7 +3006,7 @@ map('Scroll to bottom',
     )
 
 map('Scroll to previous shell prompt',
-    'scroll_to_previous_prompt kitty_mod+z scroll_to_prompt -1',
+    'scroll_to_previous_prompt --allow-fallback=shifted,ascii kitty_mod+z scroll_to_prompt -1',
     long_text='''
 Use a parameter of :code:`0` for :ac:`scroll_to_prompt` to scroll to the last
 jumped to or the last clicked position. Requires :ref:`shell integration
@@ -4117,10 +3014,10 @@ jumped to or the last clicked position. Requires :ref:`shell integration
 '''
     )
 
-map('Scroll to next shell prompt', 'scroll_to_next_prompt kitty_mod+x scroll_to_prompt 1')
+map('Scroll to next shell prompt', 'scroll_to_next_prompt --allow-fallback=shifted,ascii kitty_mod+x scroll_to_prompt 1')
 
 map('Browse scrollback buffer in pager',
-    'show_scrollback kitty_mod+h show_scrollback',
+    'show_scrollback --allow-fallback=shifted,ascii kitty_mod+h show_scrollback',
     long_text='''
 You can pipe the contents of the current screen and history buffer as
 :file:`STDIN` to an arbitrary program using :option:`launch --stdin-source`.
@@ -4135,7 +3032,7 @@ see :doc:`launch`.
     )
 
 map('Browse output of the last shell command in pager',
-    'show_last_command_output kitty_mod+g show_last_command_output',
+    'show_last_command_output --allow-fallback=shifted,ascii kitty_mod+g show_last_command_output',
     long_text='''
 You can also define additional shortcuts to get the command output.
 For example, to get the first command output on screen::
@@ -4172,7 +3069,7 @@ a manual mapping with a special pager for this, you can use something like:
 For more sophisticated control, such as using the current selection, use :ac:`remote_control_script`.
 ''')
 
-map('Search the scrollback within a pager', 'search_scrollback cmd+f search_scrollback', only='macos')
+map('Search the scrollback within a pager', 'search_scrollback --allow-fallback=shifted,ascii cmd+f search_scrollback', only='macos')
 
 
 egr()  # }}}
@@ -4216,7 +3113,7 @@ map('New window',
     )
 
 map('New OS window',
-    'new_os_window kitty_mod+n new_os_window',
+    'new_os_window --allow-fallback=shifted,ascii kitty_mod+n new_os_window',
     long_text='''
 Works like :ac:`new_window` above, except that it opens a top-level :term:`OS
 window <os_window>`. In particular you can use :ac:`new_os_window_with_cwd` to
@@ -4224,15 +3121,15 @@ open a window with the current working directory.
 '''
     )
 map('New OS window',
-    'new_os_window cmd+n new_os_window',
+    'new_os_window --allow-fallback=shifted,ascii cmd+n new_os_window',
     only='macos',
     )
 
 map('Close window',
-    'close_window kitty_mod+w close_window',
+    'close_window --allow-fallback=shifted,ascii kitty_mod+w close_window',
     )
 map('Close window',
-    'close_window shift+cmd+d close_window',
+    'close_window --allow-fallback=shifted,ascii shift+cmd+d close_window',
     only='macos',
     )
 
@@ -4245,11 +3142,11 @@ map('Previous window',
     )
 
 map('Move window forward',
-    'move_window_forward kitty_mod+f move_window_forward',
+    'move_window_forward --allow-fallback=shifted,ascii kitty_mod+f move_window_forward',
     )
 
 map('Move window backward',
-    'move_window_backward kitty_mod+b move_window_backward',
+    'move_window_backward --allow-fallback=shifted,ascii kitty_mod+b move_window_backward',
     )
 
 map('Move window to top',
@@ -4257,10 +3154,10 @@ map('Move window to top',
     )
 
 map('Start resizing window',
-    'start_resizing_window kitty_mod+r start_resizing_window',
+    'start_resizing_window --allow-fallback=shifted,ascii kitty_mod+r start_resizing_window',
     )
 map('Start resizing window',
-    'start_resizing_window cmd+r start_resizing_window',
+    'start_resizing_window --allow-fallback=shifted,ascii cmd+r start_resizing_window',
     only='macos',
     )
 
@@ -4382,23 +3279,23 @@ map('Previous tab',
     )
 
 map('New tab',
-    'new_tab kitty_mod+t new_tab',
+    'new_tab --allow-fallback=shifted,ascii kitty_mod+t new_tab',
     )
 map('New tab',
-    'new_tab cmd+t new_tab',
+    'new_tab --allow-fallback=shifted,ascii cmd+t new_tab',
     only='macos',
     )
 
 map('Close tab',
-    'close_tab kitty_mod+q close_tab',
+    'close_tab --allow-fallback=shifted,ascii kitty_mod+q close_tab',
     )
 map('Close tab',
-    'close_tab cmd+w close_tab',
+    'close_tab --allow-fallback=shifted,ascii cmd+w close_tab',
     only='macos',
     )
 
 map('Close OS window',
-    'close_os_window shift+cmd+w close_os_window',
+    'close_os_window --allow-fallback=shifted,ascii shift+cmd+w close_os_window',
     only='macos',
     )
 
@@ -4411,10 +3308,10 @@ map('Move tab backward',
     )
 
 map('Set tab title',
-    'set_tab_title kitty_mod+alt+t set_tab_title',
+    'set_tab_title --allow-fallback=shifted,ascii kitty_mod+alt+t set_tab_title',
     )
 map('Set tab title',
-    'set_tab_title shift+cmd+i set_tab_title',
+    'set_tab_title --allow-fallback=shifted,ascii shift+cmd+i set_tab_title',
     only='macos',
     )
 egr('''
@@ -4440,7 +3337,7 @@ end of the tabs list, use::
 agr('shortcuts.layout', 'Layout management')
 
 map('Next layout',
-    'next_layout kitty_mod+l next_layout',
+    'next_layout --allow-fallback=shifted,ascii kitty_mod+l next_layout',
     )
 egr('''
 You can also create shortcuts to switch to specific :term:`layouts <layout>`::
@@ -4533,7 +3430,7 @@ insert it into the terminal or copy it to the clipboard.
 ''')
 
 map('Open URL',
-    'open_url kitty_mod+e open_url_with_hints',
+    'open_url --allow-fallback=shifted,ascii kitty_mod+e open_url_with_hints',
     long_text='''
 Open a currently visible URL using the keyboard. The program used to open the
 URL is specified in :opt:`open_url_with`.
@@ -4541,7 +3438,7 @@ URL is specified in :opt:`open_url_with`.
     )
 
 map('Insert selected path',
-    'insert_selected_path kitty_mod+p>f kitten hints --type path --program -',
+    'insert_selected_path --allow-fallback=shifted,ascii kitty_mod+p>f kitten hints --type path --program -',
     long_text='''
 Select a path/filename and insert it into the terminal. Useful, for instance to
 run :program:`git` commands on a filename output from a previous :program:`git`
@@ -4550,12 +3447,12 @@ command.
     )
 
 map('Open selected path',
-    'open_selected_path kitty_mod+p>shift+f kitten hints --type path',
+    'open_selected_path --allow-fallback=shifted,ascii kitty_mod+p>shift+f kitten hints --type path',
     long_text='Select a path/filename and open it with the default open program.'
     )
 
 map('Insert chosen file',
-    'insert_chosen_file kitty_mod+p>c kitten choose-files',
+    'insert_chosen_file --allow-fallback=shifted,ascii kitty_mod+p>c kitten choose-files',
     long_text='''
 Select a file using the :doc:`choose-files </kittens/choose-files>` kitten and insert
 it into the terminal.
@@ -4563,7 +3460,7 @@ it into the terminal.
     )
 
 map('Insert chosen directory',
-    'insert_chosen_directory kitty_mod+p>d kitten choose-files --mode=dir',
+    'insert_chosen_directory --allow-fallback=shifted,ascii kitty_mod+p>d kitten choose-files --mode=dir',
     long_text='''
 Select a directory using the :doc:`choose-files </kittens/choose-files>` kitten and insert
 it into the terminal.
@@ -4572,7 +3469,7 @@ it into the terminal.
 
 
 map('Insert selected line',
-    'insert_selected_line kitty_mod+p>l kitten hints --type line --program -',
+    'insert_selected_line --allow-fallback=shifted,ascii kitty_mod+p>l kitten hints --type line --program -',
     long_text='''
 Select a line of text and insert it into the terminal. Useful for the output of
 things like: ``ls -1``.
@@ -4580,12 +3477,12 @@ things like: ``ls -1``.
     )
 
 map('Insert selected word',
-    'insert_selected_word kitty_mod+p>w kitten hints --type word --program -',
+    'insert_selected_word --allow-fallback=shifted,ascii kitty_mod+p>w kitten hints --type word --program -',
     long_text='Select words and insert into terminal.'
     )
 
 map('Insert selected hash',
-    'insert_selected_hash kitty_mod+p>h kitten hints --type hash --program -',
+    'insert_selected_hash --allow-fallback=shifted,ascii kitty_mod+p>h kitten hints --type hash --program -',
     long_text='''
 Select something that looks like a hash and insert it into the terminal. Useful
 with :program:`git`, which uses SHA1 hashes to identify commits.
@@ -4593,7 +3490,7 @@ with :program:`git`, which uses SHA1 hashes to identify commits.
     )
 
 map('Open the selected file at the selected line',
-    'goto_file_line kitty_mod+p>n kitten hints --type linenum',
+    'goto_file_line --allow-fallback=shifted,ascii kitty_mod+p>n kitten hints --type linenum',
     long_text='''
 Select something that looks like :code:`filename:linenum` and open it in
 your default editor at the specified line number.
@@ -4601,7 +3498,7 @@ your default editor at the specified line number.
     )
 
 map('Open the selected hyperlink',
-    'open_selected_hyperlink kitty_mod+p>y kitten hints --type hyperlink',
+    'open_selected_hyperlink --allow-fallback=shifted,ascii kitty_mod+p>y kitten hints --type hyperlink',
     long_text='''
 Select a :term:`hyperlink <hyperlinks>` (i.e. a URL that has been marked as such
 by the terminal program, for example, by ``ls --hyperlink=auto``).
@@ -4626,7 +3523,7 @@ map('Toggle fullscreen',
     'toggle_fullscreen kitty_mod+f11 toggle_fullscreen',
     )
 map('Toggle fullscreen',
-    'toggle_fullscreen ctrl+cmd+f toggle_fullscreen',
+    'toggle_fullscreen --allow-fallback=shifted,ascii ctrl+cmd+f toggle_fullscreen',
     only='macos',
     )
 
@@ -4635,7 +3532,7 @@ map('Toggle maximized',
     )
 
 map('Toggle macOS secure keyboard entry',
-    'toggle_macos_secure_keyboard_entry opt+cmd+s toggle_macos_secure_keyboard_entry',
+    'toggle_macos_secure_keyboard_entry --allow-fallback=shifted,ascii opt+cmd+s toggle_macos_secure_keyboard_entry',
     only='macos',
     )
 
@@ -4643,7 +3540,7 @@ map('macOS Cycle through OS Windows', 'macos_cycle_through_os_windows cmd+` maco
 map('macOS Cycle through OS Windows backwards', 'macos_cycle_through_os_windows_backwards cmd+shift+` macos_cycle_through_os_windows_backwards', only='macos')
 
 map('Unicode input',
-    'input_unicode_character kitty_mod+u kitten unicode_input',
+    'input_unicode_character --allow-fallback=shifted,ascii kitty_mod+u kitten unicode_input',
     )
 map('Unicode input',
     'input_unicode_character ctrl+cmd+space kitten unicode_input',
@@ -4667,19 +3564,19 @@ Open the kitty shell in a new :code:`window` / :code:`tab` / :code:`overlay` /
     )
 
 map('Increase background opacity',
-    'increase_background_opacity kitty_mod+a>m set_background_opacity +0.1',
+    'increase_background_opacity --allow-fallback=shifted,ascii kitty_mod+a>m set_background_opacity +0.1',
     )
 
 map('Decrease background opacity',
-    'decrease_background_opacity kitty_mod+a>l set_background_opacity -0.1',
+    'decrease_background_opacity --allow-fallback=shifted,ascii kitty_mod+a>l set_background_opacity -0.1',
     )
 
 map('Make background fully opaque',
-    'full_background_opacity kitty_mod+a>1 set_background_opacity 1',
+    'full_background_opacity --allow-fallback=shifted,ascii kitty_mod+a>1 set_background_opacity 1',
     )
 
 map('Reset background opacity',
-    'reset_background_opacity kitty_mod+a>d set_background_opacity default',
+    'reset_background_opacity --allow-fallback=shifted,ascii kitty_mod+a>d set_background_opacity default',
     )
 
 map('Reset the terminal',

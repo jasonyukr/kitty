@@ -4,15 +4,16 @@
 
 import os
 import shutil
-from collections.abc import Container, Iterable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from contextlib import suppress
-from typing import Any, Callable, Literal, NamedTuple, TypedDict
+from typing import Any, Literal, NamedTuple, TypedDict
 
 from .boss import Boss
 from .child import Child
 from .cli import parse_args
 from .cli_stub import LaunchCLIOptions
 from .clipboard import set_clipboard_string, set_primary_selection
+from .constants import is_wayland
 from .fast_data_types import add_timer, get_boss, get_options, get_os_window_title, patch_color_profiles
 from .options.utils import env as parse_env
 from .tabs import Tab, TabManager
@@ -194,8 +195,10 @@ type=bool-set
 Copy the environment variables from the :option:`source window <launch --source-window>` into the newly
 launched child process. Note that this only copies the environment when the
 window was first created, as it is not possible to get updated environment variables
-from arbitrary processes. To copy that environment, use either the :ref:`clone-in-kitty
-<clone_shell>` feature or the kitty remote control feature with :option:`kitten @ launch --copy-env`.
+from arbitrary processes. In particular, this means, if you are running a shell in the
+window and the shell has set env vars in its rc files, these will **not** be copied.
+To copy that environment, use either the :ref:`clone-in-kitty <clone_shell>` feature
+or the kitty remote control feature with :option:`kitten @ launch --copy-env`.
 
 
 --location
@@ -356,6 +359,12 @@ choices=normal,fullscreen,maximized,minimized
 The initial state for the newly created OS Window.
 
 
+--os-window-position
+The position, for example :code:`10x20`, on screen at which to place the newly
+created OS Window. This may or may not work depending on the policies of the
+desktop environment/window manager. It never works on Wayland.
+
+
 --logo
 completion=type:file ext:png group:"PNG images" relative:conf
 Path to a PNG image to use as the logo for the newly created window. See
@@ -453,6 +462,13 @@ def layer_shell_config_from_panel_opts(panel_opts: Iterable[str]) -> LayerShellC
     return layer_shell_config(opts)
 
 
+def parse_os_window_position(position: str | None) -> tuple[int | None, int | None]:
+    if not position:
+        return None, None
+    x, _, y = position.lower().partition('x')
+    return int(x), int(y)
+
+
 def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, next_to: Window | None, add_to_session: str) -> Tab:
 
     def create_tab(tm: TabManager | None = None) -> Tab:
@@ -460,11 +476,13 @@ def tab_for_window(boss: Boss, opts: LaunchCLIOptions, target_tab: Tab | None, n
             if opts.type == 'os-panel':
                 oswid = boss.add_os_panel(layer_shell_config_from_panel_opts(opts.os_panel), opts.os_window_class, opts.os_window_name)
             else:
+                x, y = (None, None) if is_wayland() else parse_os_window_position(opts.os_window_position)
                 oswid = boss.add_os_window(
                     wclass=opts.os_window_class,
                     wname=opts.os_window_name,
                     window_state=opts.os_window_state,
-                    override_title=opts.os_window_title or None)
+                    override_title=opts.os_window_title or None,
+                    x=x, y=y)
             tm = boss.os_window_map[oswid]
         tab = tm.new_tab(empty_tab=True, location=opts.location)
         if opts.tab_title:
@@ -867,18 +885,24 @@ def launch(
 @run_once
 def clone_safe_opts() -> frozenset[str]:
     return frozenset((
-        'window_title', 'tab_title', 'type', 'keep_focus', 'cwd', 'env', 'var', 'hold',
+        'window_title', 'tab_title', 'type', 'keep_focus', 'cwd', 'var', 'hold',
         'location', 'os_window_class', 'os_window_name', 'os_window_title', 'os_window_state',
-        'logo', 'logo_position', 'logo_alpha', 'color', 'spacing', 'next_to', 'hold_after_ssh'
+        'os_window_position', 'logo', 'logo_position', 'logo_alpha', 'spacing', 'next_to', 'hold_after_ssh'
     ))
 
 
-def parse_opts_for_clone(args: list[str]) -> tuple[LaunchCLIOptions, list[str]]:
+def parse_opts_for_clone(args: list[str], allow_env: bool = False) -> tuple[LaunchCLIOptions, list[str]]:
     unsafe, unsafe_args = parse_launch_args(args)
     default_opts, default_args = parse_launch_args()
     # only copy safe options, those that dont lead to local code exec
     for x in clone_safe_opts():
         setattr(default_opts, x, getattr(unsafe, x))
+    if allow_env:
+        # Env is not safe in general because some programs may execute code
+        # based on the value of env vars, such as VIMINIT for vim.
+        default_opts.env = unsafe.env
+    # color specs that dont have = will be parsed as a conf file. That is unsafe because of geninclude.
+    default_opts.color = [x for x in unsafe.color if '=' in x]
     return default_opts, unsafe_args
 
 
@@ -1072,7 +1096,7 @@ class CloneCmd:
         self.bash_version = ''
         self.history = ''
         self.parse_message(msg)
-        self.opts = parse_opts_for_clone(self.args)[0]
+        self.opts = parse_opts_for_clone(self.args, allow_env=True)[0]
 
     def parse_message(self, msg: str) -> None:
         simple = 'pid', 'envfmt', 'shell', 'bash_version'

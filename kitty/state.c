@@ -6,6 +6,7 @@
  */
 
 #include "cleanup.h"
+#include "dnd.h"
 #include "options/to-c-generated.h"
 #include <math.h>
 #include <sys/mman.h>
@@ -174,7 +175,7 @@ free_bgimage_bitmap(BackgroundImage *bgimage) {
     bgimage->mmap_size = 0;
 }
 
-static void
+static bool
 send_bgimage_to_gpu(BackgroundImageLayout layout, BackgroundImage *bgimage) {
     RepeatStrategy r = REPEAT_DEFAULT;
     switch (layout) {
@@ -193,6 +194,7 @@ send_bgimage_to_gpu(BackgroundImageLayout layout, BackgroundImage *bgimage) {
     send_image_to_gpu(&bgimage->texture_id, bgimage->bitmap + delta, bgimage->width,
             bgimage->height, false, true, OPT(background_image_linear), r);
     free_bgimage_bitmap(bgimage);
+    return bgimage->texture_id > 0;
 }
 
 static void
@@ -205,7 +207,74 @@ free_bgimage(BackgroundImage **bgimage, bool release_texture) {
             free(*bgimage);
         }
     }
-    bgimage = NULL;
+    *bgimage = NULL;
+}
+
+static void
+free_global_background_images(bool release_texture) {
+    if (global_state.background_images.images) {
+        for (size_t i = 0; i < global_state.background_images.count; i++)
+            free_bgimage(&global_state.background_images.images[i], release_texture);
+        free(global_state.background_images.images);
+        global_state.background_images.images = NULL;
+    }
+    zero_at_ptr(&global_state.background_images);
+}
+
+static void
+ensure_background_images_generation(bool release_texture) {
+    if (global_state.background_images.generation == OPT(background_images).generation) return;
+    free_global_background_images(release_texture);
+    global_state.background_images.generation = OPT(background_images).generation;
+    global_state.background_images.entries_attempted = 0;
+    if (OPT(background_images).count) {
+        global_state.background_images.images = calloc(
+                OPT(background_images).count, sizeof(global_state.background_images.images[0]));
+        if (!global_state.background_images.images) fatal("Out of memory");
+    }
+}
+
+static unsigned bg_image_id_counter = 0;
+
+static BackgroundImage*
+global_background_image(size_t idx) {
+    ensure_background_images_generation(true);
+    while (global_state.background_images.count <= idx && global_state.background_images.entries_attempted < OPT(background_images).count) {
+        size_t j = global_state.background_images.entries_attempted++;
+        BackgroundImage *img = calloc(1, sizeof(BackgroundImage));
+        if (!img) fatal("Out of memory");
+        if (image_path_to_bitmap(OPT(background_images).paths[j], &img->bitmap, &img->width, &img->height, &img->mmap_size)) {
+            if (send_bgimage_to_gpu(OPT(background_image_layout), img)) {
+                img->refcnt++;
+                img->id = ++bg_image_id_counter;
+                global_state.background_images.images[global_state.background_images.count++] = img;
+            } else free(img);
+        } else free(img);
+    }
+    return global_state.background_images.count > idx ? global_state.background_images.images[idx] : NULL;
+}
+
+BackgroundImage*
+background_image_for_os_window(OSWindow *w) {
+    if (w->background_image.no_image) return NULL;
+    if (w->background_image.override) return w->background_image.override;
+    BackgroundImage *ans = NULL;
+    if (w->background_image.global_bg_images_idx && (
+        ans = global_background_image(w->background_image.global_bg_images_idx))) return ans;
+    return global_background_image(0);
+}
+
+static size_t
+increment_bg_image_idx(size_t idx, int delta) {
+    if (delta == 0) return idx;
+    if (delta > 0) {
+        size_t new_idx = idx + delta;
+        return global_background_image(new_idx) ? new_idx : 0;
+    }
+    if ((unsigned)abs(delta) <= idx) return idx + delta;
+    // wrap to last image, which means we need to load all
+    if (OPT(background_images).count > 0) global_background_image(OPT(background_images).count - 1);
+    return global_state.background_images.count ? global_state.background_images.count - 1 : 0;
 }
 
 OSWindow*
@@ -218,23 +287,6 @@ add_os_window(void) {
     ans->tab_bar_render_data.vao_idx = create_cell_vao();
     ans->background_opacity.alpha = OPT(background_opacity);
     ans->created_at = monotonic();
-
-    bool wants_bg = OPT(background_image) && OPT(background_image)[0] != 0;
-    if (wants_bg) {
-        if (!global_state.bgimage) {
-            global_state.bgimage = calloc(1, sizeof(BackgroundImage));
-            if (!global_state.bgimage) fatal("Out of memory allocating the global bg image object");
-            global_state.bgimage->refcnt++;
-            if (image_path_to_bitmap(OPT(background_image), &global_state.bgimage->bitmap, &global_state.bgimage->width, &global_state.bgimage->height, &global_state.bgimage->mmap_size)) {
-                send_bgimage_to_gpu(OPT(background_image_layout), global_state.bgimage);
-            }
-        }
-        if (global_state.bgimage->texture_id) {
-            ans->bgimage = global_state.bgimage;
-            ans->bgimage->refcnt++;
-        }
-    }
-
     END_WITH_OS_WINDOW_REFS
     return ans;
 }
@@ -351,6 +403,8 @@ update_os_window_title(OSWindow *os_window) {
 
 static void
 destroy_window(Window *w) {
+    drop_free_data(w);
+    drag_free_offer(w, true);
     free(w->pending_clicks.clicks); zero_at_ptr(&w->pending_clicks);
     free(w->buffered_keys.key_data); zero_at_ptr(&w->buffered_keys);
     Py_CLEAR(w->render_data.screen); Py_CLEAR(w->title);
@@ -493,8 +547,8 @@ destroy_os_window_item(OSWindow *w) {
     Py_CLEAR(w->window_title); Py_CLEAR(w->tab_bar_render_data.screen);
     remove_vao(w->tab_bar_render_data.vao_idx);
     free(w->tabs); w->tabs = NULL;
-    free_bgimage(&w->bgimage, true);
-    zero_at_ptr(&w->bgimage);
+    free_bgimage(&w->background_image.override, true);
+    zero_at_ptr(&w->background_image);
     if (w->indirect_output.framebuffer_id) free_framebuffer(&w->indirect_output.framebuffer_id);
 }
 
@@ -695,7 +749,7 @@ owners_for_window_id(id_type window_id, OSWindow **os_window, Tab **tab) {
 bool
 make_window_context_current(id_type window_id) {
     OSWindow *os_window;
-    if (owners_for_window_id(window_id, &os_window, NULL)) {
+    if (owners_for_window_id(window_id, &os_window, NULL) && os_window->handle) {
         make_os_window_context_current(os_window);
         return true;
     }
@@ -864,6 +918,25 @@ PYWRAP1(set_tab_bar_render_data) {
     Py_RETURN_NONE;
 }
 
+PYWRAP1(set_window_drag_overlay) {
+    id_type os_window_id, tab_id, window_id;
+    int quadrant;
+    PA("KKKi", &os_window_id, &tab_id, &window_id, &quadrant);
+    WITH_WINDOW(os_window_id, tab_id, window_id)
+        Screen *s = window->render_data.screen;
+        if (s) {
+            if (quadrant == 0) {
+                s->start_drag_overlay_at = 0;
+                s->drag_overlay_quadrant = 0;
+            } else if (s->drag_overlay_quadrant != (uint8_t)quadrant) {
+                s->start_drag_overlay_at = monotonic();
+                s->drag_overlay_quadrant = (uint8_t)quadrant;
+            }
+        }
+    END_WITH_WINDOW
+    Py_RETURN_NONE;
+}
+
 PYWRAP1(set_window_title_bar_render_data) {
     WindowGeometry g = {0};
     id_type os_window_id, tab_id, window_id;
@@ -929,7 +1002,7 @@ PYWRAP1(os_window_has_background_image) {
     id_type os_window_id;
     PA("K", &os_window_id);
     WITH_OS_WINDOW(os_window_id)
-        if (os_window->bgimage && os_window->bgimage->texture_id > 0) { Py_RETURN_TRUE; }
+        if (background_image_for_os_window(os_window) != NULL) Py_RETURN_TRUE;
     END_WITH_OS_WINDOW
     Py_RETURN_FALSE;
 }
@@ -1300,8 +1373,12 @@ pyset_background_image(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     PyObject *os_window_ids;
     int configured = 0;
     char *png_data = NULL; Py_ssize_t png_data_size = 0;
-    static char *kwds[] = {"path", "os_window_ids", "configured", "layout_name", "png_data", "linear", "tint", "tint_gaps", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "zO!|pOy#OOO", kwds, &path, &PyTuple_Type, &os_window_ids, &configured, &layout_name, &png_data, &png_data_size, &pylinear, &pytint, &pytint_gaps)) return NULL;
+    int global_index = -1; int is_increment = 0;
+    static char *kwds[] = {
+        "path", "os_window_ids", "configured", "layout_name", "png_data", "linear", "tint", "tint_gaps", "global_index",
+        "is_increment",
+    NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "zO!|pOy#OOOip", kwds, &path, &PyTuple_Type, &os_window_ids, &configured, &layout_name, &png_data, &png_data_size, &pylinear, &pytint, &pytint_gaps, &global_index, &is_increment)) return NULL;
     size_t size;
     BackgroundImageLayout layout = PyUnicode_Check(layout_name) ? bglayout(layout_name) : OPT(background_image_layout);
     BackgroundImage *bgimage = NULL;
@@ -1319,15 +1396,34 @@ pyset_background_image(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
             free(bgimage);
             return NULL;
         }
-        static uint32_t bgimage_id_counter = 0;
-        bgimage->id = ++bgimage_id_counter;
-        send_bgimage_to_gpu(layout, bgimage);
+        bgimage->id = ++bg_image_id_counter;
+        if (!send_bgimage_to_gpu(layout, bgimage)) {
+            PyErr_Format(PyExc_ValueError, "Failed to send image to GPU image from: %s", path);
+            free(bgimage);
+            return NULL;
+        }
         bgimage->refcnt++;
     }
     if (configured) {
-        free_bgimage(&global_state.bgimage, true);
-        global_state.bgimage = bgimage;
-        if (bgimage) bgimage->refcnt++;
+        if (bgimage) {
+            if (global_background_image(0)) {
+                free_bgimage(&global_state.background_images.images[0], true);
+            } else {
+                free_global_background_images(true);
+                global_state.background_images.images = calloc(1, sizeof(global_state.background_images.images[0]));
+                if (!global_state.background_images.images) fatal("Out of memory");
+                global_state.background_images.count = 1;
+                global_state.background_images.generation = OPT(background_images).generation;
+            }
+            global_state.background_images.images[0] = bgimage;
+            bgimage->refcnt++;
+            if (OPT(background_images).count > 0) {
+                free(OPT(background_images).paths[0]);
+                char *new_path = strdup(path);
+                if (!new_path) fatal("Out of memory");
+                OPT(background_images).paths[0] = new_path;
+            }
+        } else free_global_background_images(true);
         OPT(background_image_layout) = layout;
         if (pylinear && pylinear != Py_None) convert_from_python_background_image_linear(pylinear, &global_state.opts);
         if (pytint && pytint != Py_None) convert_from_python_background_tint(pytint, &global_state.opts);
@@ -1336,11 +1432,22 @@ pyset_background_image(PyObject *self UNUSED, PyObject *args, PyObject *kw) {
     for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(os_window_ids); i++) {
         id_type os_window_id = PyLong_AsUnsignedLongLong(PyTuple_GET_ITEM(os_window_ids, i));
         WITH_OS_WINDOW(os_window_id)
+            unsigned idx = os_window->background_image.global_bg_images_idx;
             make_os_window_context_current(os_window);
-            free_bgimage(&os_window->bgimage, true);
-            os_window->bgimage = bgimage;
+            free_bgimage(&os_window->background_image.override, true);
+            zero_at_ptr(&os_window->background_image);
             os_window->render_calls = 0;
-            if (bgimage) bgimage->refcnt++;
+            if (bgimage) {
+                if (!configured) {  // configured means we use the zero index global image
+                    os_window->background_image.override = bgimage;
+                    os_window->background_image.layout = layout;
+                    os_window->background_image.has_layout = true;
+                    bgimage->refcnt++;
+                }
+            } else if (is_increment) {
+                os_window->background_image.global_bg_images_idx = increment_bg_image_idx(idx, global_index);
+            } else if (global_index < 0) os_window->background_image.no_image = true;
+            else os_window->background_image.global_bg_images_idx = global_index;
         END_WITH_OS_WINDOW
     }
     if (bgimage) free_bgimage(&bgimage, true);
@@ -1552,6 +1659,20 @@ get_tab_being_dragged(PyObject *self UNUSED, PyObject *args UNUSED) {
 }
 #undef tbd
 
+#define wbd global_state.window_being_dragged
+static PyObject*
+set_window_being_dragged(PyObject *self UNUSED, PyObject *args) {
+    zero_at_ptr(&wbd);
+    if (!PyArg_ParseTuple(args, "|Kpdd", &wbd.id, &wbd.drag_started, &wbd.x, &wbd.y)) return NULL;
+    Py_RETURN_NONE;
+}
+
+static PyObject*
+get_window_being_dragged(PyObject *self UNUSED, PyObject *args UNUSED) {
+    return Py_BuildValue("KOdd", wbd.id, wbd.drag_started ? Py_True : Py_False, wbd.x, wbd.y);
+}
+#undef wbd
+
 static PyObject*
 request_callback_with_thumbnail(PyObject *self UNUSED, PyObject *args) {
     unsigned long long os_window_id, window_id = 0;
@@ -1580,6 +1701,8 @@ static PyMethodDef module_methods[] = {
     M(request_callback_with_thumbnail, METH_VARARGS),
     M(set_tab_being_dragged, METH_VARARGS),
     M(get_tab_being_dragged, METH_NOARGS),
+    M(set_window_being_dragged, METH_VARARGS),
+    M(get_window_being_dragged, METH_NOARGS),
     MW(update_pointer_shape, METH_VARARGS),
     MW(current_os_window, METH_NOARGS),
     MW(next_window_id, METH_NOARGS),
@@ -1616,6 +1739,7 @@ static PyMethodDef module_methods[] = {
     MW(set_tab_bar_render_data, METH_VARARGS),
     MW(set_window_title_bar_render_data, METH_VARARGS),
     MW(set_window_render_data, METH_VARARGS),
+    MW(set_window_drag_overlay, METH_VARARGS),
     MW(set_window_padding, METH_VARARGS),
     MW(viewport_for_window, METH_VARARGS),
     MW(cell_size_for_window, METH_VARARGS),
@@ -1661,9 +1785,6 @@ finalize(void) {
     }
     if (detached_windows.windows) free(detached_windows.windows);
     detached_windows.capacity = 0;
-#define F(x) free(OPT(x)); OPT(x) = NULL;
-    F(background_image); F(bell_path); F(bell_theme); F(default_window_logo);
-#undef F
     Py_CLEAR(global_state.options_object);
     free_animation(OPT(animation.cursor));
     free_animation(OPT(animation.visual_bell));
@@ -1671,9 +1792,8 @@ finalize(void) {
     // that freeing the texture will work during shutdown and
     // the GPU driver should take care of it when the OpenGL context is
     // destroyed.
-    free_bgimage(&global_state.bgimage, false);
+    free_global_background_images(false);
     free_window_logo_table(&global_state.all_window_logos);
-    global_state.bgimage = NULL;
     free_drag_source();
     Py_CLEAR(global_state.drop_dest.data);
     zero_at_ptr(&global_state.drop_dest);

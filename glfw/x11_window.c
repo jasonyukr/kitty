@@ -937,7 +937,9 @@ get_clipboard_data(const _GLFWClipboardData *cd, const char *mime, char **data) 
         if (!chunk.sz) break;
         if (cap < sz + chunk.sz) {
             cap = MAX(cap * 2, sz + 4 * chunk.sz);
-            buf = realloc(buf, cap * sizeof(buf[0]));
+            char *new_buf = realloc(buf, cap * sizeof(buf[0]));
+            if (!new_buf) { free(buf); *data = NULL; cd->get_data(NULL, iter, cd->ctype); return 0; }
+            buf = new_buf;
         }
         memcpy(buf + sz, chunk.data, chunk.sz);
         sz += chunk.sz;
@@ -1466,15 +1468,17 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
             *off = delta;
             d->num_events++;
             if (!d->type_detected) {
+                debug_input("Detecting scroll device type: delta: %.3f delta*120: %.3f v->increment: %.3f\n", delta, delta * 120, v->increment);
                 if (v->increment == 120.) {
                     d->type_detected = true;
                     d->offset_type = GLFW_SCROLL_OFFEST_V120;
+                    d->v120_offset_needs_scaling = false;
                 } else {
-                    bool delta_is_fractional = number_has_fractional_part(delta);
-                    if (delta_is_fractional) {
+                    if (number_has_fractional_part(delta)) {
                         if (fabs(delta * 120 - round(delta * 120)) < 0.01) {
                             d->type_detected = d->num_events > 2;
                             d->offset_type = GLFW_SCROLL_OFFEST_V120;
+                            d->v120_offset_needs_scaling = v->increment == 1.;
                         } else {
                             d->type_detected = true;
                             d->offset_type = GLFW_SCROLL_OFFEST_HIGHRES;
@@ -1485,8 +1489,14 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
                     }
                 }
             }
-            if (d->offset_type == GLFW_SCROLL_OFFSET_LINES) {
-                if (v->increment != 0) *off /= v->increment;
+            if (v->increment != 0) {
+                if (d->offset_type == GLFW_SCROLL_OFFSET_LINES) {
+                    *off /= v->increment;
+                } else if (d->offset_type == GLFW_SCROLL_OFFEST_V120 && d->v120_offset_needs_scaling) {
+                    // On XWayland, scroll deltas are in scroll-increment units (typically
+                    // where increment=1.0 means one line or one v120).
+                    *off *= 120.;
+                }
             }
         }
         type = d->offset_type;
@@ -1503,7 +1513,7 @@ handle_xi_motion_event(_GLFWwindow *window, XIDeviceEvent *de) {
             };
 
             // For high-resolution, finger-based scrolling, use timer-based momentum scrolling
-            if (d->is_finger_based && type == GLFW_SCROLL_OFFEST_HIGHRES) {
+            if (d->is_finger_based && type == GLFW_SCROLL_OFFEST_HIGHRES && glfw_is_momentum_scroll_enabled()) {
                 // Reset the timer on each scroll event
                 x11_cancel_momentum_scroll_timer();
 
@@ -1570,25 +1580,24 @@ update_drop_state(_GLFWwindow* window, size_t accepted_count) {
         if (new_preferred_mime) strncpy(dnd.format, new_preferred_mime, arraysz(dnd.format)-1);
         else dnd.format[0] = 0;
     }
-    if (accepted) {
-        XEvent reply = { ClientMessage };
-        reply.xclient.window = dnd.source;
-        reply.xclient.message_type = _glfw.x11.XdndStatus;
-        reply.xclient.format = 32;
-        reply.xclient.data.l[0] = window->x11.handle;
-        reply.xclient.data.l[2] = 0; // Specify an empty rectangle
-        reply.xclient.data.l[3] = 0;
+    XEvent reply = { ClientMessage };
+    reply.xclient.window = dnd.source;
+    reply.xclient.message_type = _glfw.x11.XdndStatus;
+    reply.xclient.format = 32;
+    reply.xclient.data.l[0] = window->x11.handle;
+    reply.xclient.data.l[2] = 0; // Specify an empty rectangle
+    reply.xclient.data.l[3] = 0;
 
-        if (dnd.format_priority > 0 && accepted) {
-            // Reply that we are ready to copy the dragged data
-            reply.xclient.data.l[1] = 1; // Accept with no rectangle
-            if (_glfw.x11.xdnd.version >= 2) reply.xclient.data.l[4] = _glfw.x11.XdndActionCopy;
-        }
-        XSendEvent(_glfw.x11.display, _glfw.x11.xdnd.source, False, NoEventMask, &reply);
-        XFlush(_glfw.x11.display);
-    } else {
-        end_drop(window, GLFW_DRAG_OPERATION_GENERIC);
+    if (accepted && dnd.format_priority > 0) {
+        // Reply that we are ready to copy the dragged data
+        reply.xclient.data.l[1] = 1; // Accept with no rectangle
+        if (_glfw.x11.xdnd.version >= 2) reply.xclient.data.l[4] = _glfw.x11.XdndActionCopy;
     }
+    // Always send XdndStatus (accepted or rejected). XdndFinished must only be
+    // sent after XdndDrop, never during drag motion — sending it here was
+    // prematurely terminating the drag source when no MIME type was accepted.
+    XSendEvent(_glfw.x11.display, _glfw.x11.xdnd.source, False, NoEventMask, &reply);
+    XFlush(_glfw.x11.display);
 }
 
 static void
@@ -1682,9 +1691,28 @@ _glfwPlatformEndDrop(GLFWwindow *w, GLFWDragOperationType op) {
 
 
 static void
+update_drop_source_actions(_GLFWwindow *window) {
+    window->drop_operation.source_actions = GLFW_DRAG_OPERATION_NONE;
+    Atom *actions = NULL;
+    unsigned long count = _glfwGetWindowPropertyX11(dnd.source, _glfw.x11.XdndActionList, XA_ATOM, (unsigned char**)&actions);
+    if (actions) {
+        for (unsigned long i = 0; i < count; i++) {
+            if (actions[i] == _glfw.x11.XdndActionCopy) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_COPY;
+            else if (actions[i] == _glfw.x11.XdndActionMove) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_MOVE;
+            else if (actions[i] == _glfw.x11.XdndActionAsk) window->drop_operation.source_actions |= GLFW_DRAG_OPERATION_GENERIC;
+        }
+        XFree(actions);
+    } else {
+        // XdndActionList not present; default to copy only
+        window->drop_operation.source_actions = GLFW_DRAG_OPERATION_COPY;
+    }
+}
+
+static void
 drop_start(_GLFWwindow *window, XEvent *event) {
     // A drag operation has entered the window
     if (dnd.version > _GLFW_XDND_VERSION) return;
+    debug_input("Drop start on window: %llu\n", window->id);
     free_dnd_data();
     dnd.source  = event->xclient.data.l[0];
     dnd.version = event->xclient.data.l[1] >> 24;
@@ -1693,6 +1721,7 @@ drop_start(_GLFWwindow *window, XEvent *event) {
     dnd.format_priority  = 0;
     update_dnd_mimes(event);
     dnd.from_self = _glfw.x11.drag.source_window != None && dnd.source == _glfw.x11.drag.source_window;
+    update_drop_source_actions(window);
     // Position is not known yet at enter time, will be updated with XdndPosition
     if (reset_dnd_copy_mimes()) {
         size_t accepted_count = _glfwInputDropEvent(
@@ -1706,6 +1735,7 @@ drop_start(_GLFWwindow *window, XEvent *event) {
 
 static void
 drop_leave(_GLFWwindow *window, XEvent *event UNUSED) {
+    debug_input("Drop has left window: %llu\n", window->id);
     // The drag operation has left the window
     _glfwInputDropEvent(window, GLFW_DROP_LEAVE, 0, 0, NULL, 0, dnd.from_self);
     if (!dnd.dropped) {
@@ -1717,6 +1747,7 @@ static void
 drop_move(_GLFWwindow *window, XEvent *event) {
     // The drag operation has moved over the window
     if (_glfw.x11.xdnd.version > _GLFW_XDND_VERSION) return;
+    debug_input("Drop moving in window: %llu\n", window->id);
 
     const int xabs = (event->xclient.data.l[2] >> 16) & 0xffff;
     const int yabs = (event->xclient.data.l[2]) & 0xffff;
@@ -1748,6 +1779,7 @@ _glfwPlatformRequestDropUpdate(_GLFWwindow* window) {
 
 static void
 drop(_GLFWwindow *window, XEvent *event) {
+    debug_input("Drop dropped on window: %llu\n", window->id);
     // The drag operation has finished by dropping on the window
     if (dnd.version > _GLFW_XDND_VERSION || dnd.version < 2) return;
     dnd.dropped = true;
@@ -2876,6 +2908,18 @@ monotonic_t _glfwPlatformGetDoubleClickInterval(_GLFWwindow* window UNUSED)
     return ms_to_monotonic_t(500ll);
 }
 
+void _glfwPlatformGetKeyboardRepeatDelay(monotonic_t *delay, monotonic_t *interval)
+{
+    XkbDescPtr xkb = XkbAllocKeyboard();
+    if (xkb) {
+        if (XkbGetControls(_glfw.x11.display, XkbRepeatKeysMask, xkb) == Success) {
+            if (delay) *delay = ms_to_monotonic_t(xkb->ctrls->repeat_delay);
+            if (interval) *interval = ms_to_monotonic_t(xkb->ctrls->repeat_interval);
+        }
+        XkbFreeKeyboard(xkb, 0, True);
+    }
+}
+
 void _glfwPlatformIconifyWindow(_GLFWwindow* window)
 {
     XIconifyWindow(_glfw.x11.display, window->x11.handle, _glfw.x11.screen);
@@ -3616,7 +3660,9 @@ write_chunk(void *object, const char *data, size_t sz) {
     if (data) {
         if (cw->cap < cw->sz + sz) {
             cw->cap = MAX(cw->cap * 2, cw->sz + 8*sz);
-            cw->buf = realloc(cw->buf, cw->cap * sizeof(cw->buf[0]));
+            char *new_buf = realloc(cw->buf, cw->cap * sizeof(cw->buf[0]));
+            if (!new_buf) return false;
+            cw->buf = new_buf;
         }
         memcpy(cw->buf + cw->sz, data, sz);
         cw->sz += sz;
@@ -4333,6 +4379,7 @@ handle_drag_button_release(Time timestamp) {
 // Handle XdndStatus message from drop target
 static void
 handle_xdnd_status(const XClientMessageEvent *event) {
+    debug_input("XdndStatus received\n");
     if (!_glfw.x11.drag.active) return;
     if (event->data.l[0] != (long)_glfw.x11.drag.current_target) return;
 
@@ -4342,11 +4389,13 @@ handle_xdnd_status(const XClientMessageEvent *event) {
     if (_glfw.x11.drag.accepted && event->data.l[4] != None) {
         _glfw.x11.drag.accepted_action = event->data.l[4];
     }
+    debug_input("XdndStatus accepted: %d action: %lu\n", _glfw.x11.drag.accepted, _glfw.x11.drag.accepted_action);
 }
 
 // Handle XdndFinished message from drop target
 static void
 handle_xdnd_finished(const XClientMessageEvent *event) {
+    debug_input("XdndFinished received\n");
     if (!_glfw.x11.drag.active) return;
     if (event->data.l[0] != (long)_glfw.x11.drag.current_target) return;
 
@@ -4503,6 +4552,17 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
 }
 
 void
+_glfwPlatformCancelDrag(_GLFWwindow* window UNUSED) {
+    if (!_glfw.drag.window_id) return;
+    _GLFWwindow* drag_win = _glfwWindowForId(_glfw.drag.window_id);
+    if (drag_win) {
+        GLFWDragEvent ev = {.type = GLFW_DRAG_CANCELLED};
+        _glfwInputDragSourceRequest(drag_win, &ev);
+    }
+    _glfwFreeDragSourceData();
+}
+
+void
 _glfwPlatformFreeDragSourceData(void) {
     if (_glfw.x11.drag.active) {
         // Send leave to current target
@@ -4579,7 +4639,7 @@ _glfwPlatformChangeDragImage(const GLFWimage *thumbnail) {
 }
 
 int
-_glfwPlatformDragDataReady(const char *mime_type) {
+_glfwPlatformDragDataReady(const char *mime_type, const char *data UNUSED, size_t sz UNUSED, int type UNUSED) {
     // Find the pending request for this MIME type
     for (size_t i = 0; i < _glfw.x11.drag.pending_count; i++) {
         if (_glfw.x11.drag.pending_requests[i].inflight &&

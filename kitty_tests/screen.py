@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 
-from kitty.config import defaults
 from kitty.fast_data_types import DECAWM, DECCOLM, DECOM, IRM, VT_PARSER_BUFFER_SIZE, Color, ColorProfile, Cursor
 from kitty.marks import marker_from_function, marker_from_regex, marker_from_text
 from kitty.window import pagerhist
@@ -703,13 +702,15 @@ class TestScreen(BaseTest):
         s.start_selection(0, 0)
         s.update_selection(1, 3)
         self.ae(ts(), ''.join(('ab   ', 'cd')))
-        self.ae(ts(False, True), ''.join(('ab', 'cd')))
+        # soft-wrapped lines preserve trailing spaces (issue #9834)
+        self.ae(ts(False, True), 'ab   cd')
         s.reset()
         s.draw('ab        cd')
         s.start_selection(0, 0)
         s.update_selection(3, 4)
         self.ae(s.text_for_selection(), ('ab   ', '     ', 'cd'))
-        self.ae(s.text_for_selection(False, True), ('ab', '\n', 'cd'))
+        # soft-wrapped lines preserve trailing spaces (issue #9834)
+        self.ae(s.text_for_selection(False, True), ('ab   ', '     ', 'cd'))
         s.reset()
         s.draw('a')
         s.select_graphic_rendition(32)
@@ -720,7 +721,8 @@ class TestScreen(BaseTest):
         s.update_selection(1, 3)
         self.ae(s.text_for_selection(), ('abc  ', 'xy'))
         self.ae(s.text_for_selection(True), ('a\x1b[32mb\x1b[39mc  ', 'xy', '\x1b[m'))
-        self.ae(s.text_for_selection(True, True), ('a\x1b[32mb\x1b[39mc', 'xy', '\x1b[m'))
+        # soft-wrapped lines preserve trailing spaces in ANSI mode too (issue #9834)
+        self.ae(s.text_for_selection(True, True), ('a\x1b[32mb\x1b[39mc  ', 'xy', '\x1b[m'))
         # ]]]]]]]]]]]]]]]]]]]]
         s.reset()
         s.draw('a'), s.carriage_return(), s.linefeed(), s.linefeed(), s.draw('b')
@@ -728,6 +730,45 @@ class TestScreen(BaseTest):
         s.update_selection(4, 4)
         self.ae(''.join(s.text_for_selection()), 'a\n\nb')
         self.ae(''.join(s.text_for_selection(True)), 'a\n\nb')
+        # Trailing spaces on soft-wrapped lines must be preserved when strip_trailing_whitespace
+        # is set: a space at the line-wrap boundary is word-separator content, not padding
+        # (regression test for issue #9834)
+        s.reset()
+        s.draw('1234 5')  # "1234 " soft-wraps at col 4; space must survive stripping
+        s.start_selection(0, 0)
+        s.update_selection(4, 4)
+        self.ae(s.text_for_selection(), ('1234 ', '5'))
+        self.ae(s.text_for_selection(False, True), ('1234 ', '5'))
+        self.ae(s.text_for_selection(True, True), ('1234 ', '5', ''))
+
+    def test_apply_selection_with_paused_rendering_and_scrollback(self):
+        # Regression test: in 0.46.2 the paused-rendering branch of
+        # apply_selection passed the (possibly negative) loop variable y
+        # directly to linebuf_init_line, which interprets it as an unsigned
+        # index_type and reads ~4GB out of bounds in line_attrs[idx]. The fix
+        # translates to paused_y = y + scrolled_by and guards paused_y < 0.
+        # Real-world trigger: a TUI sending DCS =1s (DEC synchronized output)
+        # while the user has scrolled back and has an active scrollback
+        # selection.
+        s = self.create_screen(cols=10, lines=3, scrollback=50)
+        for i in range(40):
+            s.draw(f"row{i:03d}")
+            s.carriage_return()
+            s.linefeed()
+        s.scroll(20, True)
+        self.assertGreater(s.scrolled_by, 0)
+        # Selection that crosses the top of the visible area into scrollback,
+        # so the inner loop iterates with negative y.
+        s.start_selection(0, 0)
+        s.update_selection(2, 1)
+        self.assertTrue(s.has_selection())
+        self.assertTrue(s.pause_rendering(True, 5000))
+        # Must not crash and must return the visible-area buffer.
+        result = s.current_selections()
+        self.ae(len(result), s.lines * s.columns)
+        # The visible portion of the selection must have at least one byte
+        # marked (set_mask = 1 for plain selections).
+        self.assertIn(1, result)
 
     def test_soft_hyphen(self):
         s = self.create_screen()
@@ -1594,32 +1635,53 @@ class TestScreen(BaseTest):
         t('=fleur', 'move')
 
     def test_color_profile(self):
-        c = ColorProfile(defaults)
+        from kitty.fast_data_types import patch_color_profiles
+        opts = self.set_options({'palette_generate': 'fixed'})
+        c = ColorProfile(opts)
         for i in range(8):
-            col = getattr(defaults, f'color{i}')
+            col = getattr(opts, f'color{i}')
             self.ae(c.as_color(i << 8 | 1), col)
+        for i in range(16, 256):
+            self.assertIsNone(getattr(opts, f'color{i}'))
         self.ae(c.as_color(255 << 8 | 1), Color(0xee, 0xee, 0xee))
         s = self.create_screen()
-        s.color_profile.reload_from_opts(defaults)
+        s.color_profile.reload_from_opts(opts)
         def q(send, expected=None):
             s.callbacks.clear()
             parse_bytes(s, b'\x1b]21;' + ';'.join(f'{k}={v}' for k, v in send.items()).encode() + b'\a')
             self.ae(s.callbacks.color_control_responses, [expected] if expected else [])
         q({k: '?' for k in 'background foreground 213 unknown'.split()}, {
-            'background': defaults.background, 'foreground': defaults.foreground, '213': defaults.color213, 'unknown': '?'})
+            'background': opts.background, 'foreground': opts.foreground,
+            '213': Color(255, 135, 255), 'unknown': '?'})
         q({'background':'aquamarine'})
         q({'background':'?', 'selection_background': '?'}, {
             'background': Color.parse_color('Aquamarine'), 'selection_background': s.color_profile.highlight_bg})
         q({'selection_background': ''})
         self.assertIsNone(s.color_profile.highlight_bg)
         q({'selection_background': '?'}, {'selection_background': ''})
-        s.color_profile.reload_from_opts(defaults)
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        opts = self.set_options({'palette_generate': 'semantic'})
+        q({'213': ''})
+        q({'213': '?'}, {'213': Color(216, 125, 215)})
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        s.color_profile.reload_from_opts(opts)
         q({'transparent_background_color9': '?'}, {'transparent_background_color9': '?'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': ''})
         q({'transparent_background_color2': 'red@0.5'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 0, 0), 126)})
         q({'transparent_background_color2': '#ffffff@-1'})
         q({'transparent_background_color2': '?'}, {'transparent_background_color2': (Color(255, 255, 255), 255)})
+        opts.color114 = Color(1, 1, 4)
+        s.color_profile.reload_from_opts(opts)
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        self.assertFalse(s.color_profile.palette_color_is_generated(114))
+        q({'213': '?'}, {'213': Color(216, 125, 215)})
+        patch_color_profiles(
+            {'background': Color(255, 255, 255), 'foreground': Color(0, 0, 0)}, (), (s.color_profile,), True)
+        self.assertTrue(s.color_profile.palette_color_is_generated(213))
+        self.assertFalse(s.color_profile.palette_color_is_generated(114))
+        q({'213': '?'}, {'213': Color(216, 125, 215)})
+
 
     def test_multi_cursors(self):
         s = self.create_screen()

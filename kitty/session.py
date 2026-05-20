@@ -6,11 +6,11 @@ import os
 import re
 import shlex
 import sys
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import suppress
 from functools import partial
 from gettext import gettext as _
-from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from .cli_stub import CLIOptions, GotoSessionOptions, SaveAsSessionOptions
 from .constants import config_dir, unserialize_launch_flag
@@ -691,7 +691,7 @@ co-located with their project directories.
 '''
 
 
-def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str) -> None:
+def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str, path_input_by_user: bool = False) -> None:
     if not path:
         return
     from .config import atomic_save
@@ -699,6 +699,8 @@ def save_as_session_part2(boss: BossType, opts: SaveAsSessionOptions, path: str)
         base_dir = os.path.abspath(os.path.expanduser(opts.base_dir))
         path = os.path.join(base_dir, path)
     path = os.path.abspath(os.path.expanduser(path))
+    if path_input_by_user and '.' not in os.path.basename(path):
+        path += '.kitty-session'
     session = '\n'.join(boss.serialize_state_as_session(path, opts))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     atomic_save(session.encode(), path)
@@ -719,6 +721,10 @@ def default_save_as_session_opts() -> SaveAsSessionOptions:
 
 def save_as_session(boss: BossType, cmdline: Sequence[str]) -> None:
     opts, args = parse_save_as_options_spec_args(list(cmdline))
+    if args and len(args) > 1:
+        boss.show_error(_('Invalid save_as_session command line'), _(
+            'save_as_session must have no more than a single path argument. Note that any flags/options should come before the path'))
+        return
     path = args[0] if args else ''
     if path == '.':
         sn = boss.active_session
@@ -728,4 +734,4 @@ def save_as_session(boss: BossType, cmdline: Sequence[str]) -> None:
     else:
         boss.get_save_filepath(_(
             'Enter the path at which to save the session, usually session files are given the .kitty-session file extension'),
-                               partial(save_as_session_part2, boss, opts))
+                               partial(save_as_session_part2, boss, opts, path_input_by_user=True))

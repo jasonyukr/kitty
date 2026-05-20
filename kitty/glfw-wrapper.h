@@ -1135,6 +1135,7 @@ typedef struct GLFWDropEvent {
     // Positions are only valid for GLFW_DROP_ENTER and GLFW_DROP_MOVE.
     // They are in window co-ordinates same as for mouse events
     double xpos, ypos;
+    struct { GLFWDragOperationType preferred; int allowed, source_actions; } operation;
     bool from_self;  // Only valid upto GLFW_DROP_DROP
     ssize_t (*read_data)(GLFWwindow *w, struct GLFWDropEvent* ev, char *buffer, size_t sz);  // Only valid for GLFW_DROP_DATA_AVAILABLE
     void (*finish_drop)(GLFWwindow *w, GLFWDragOperationType op); // Only valid for GLFW_DROP_DROP and GLFW_DROP_DATA_AVAILABLE
@@ -1554,6 +1555,8 @@ typedef struct GLFWDragSourceItem {
     // Can be on null to provide data when the drag is started should be used only when the data is relatively small
     const char *optional_data;
     size_t data_size;
+    bool is_remote_client;
+    int type;  // used for file promises type of entry 0 = regular, 1 = symlink, 2 = directory
 } GLFWDragSourceItem;
 
 typedef struct GLFWDragEvent {
@@ -1567,6 +1570,7 @@ typedef struct GLFWDragEvent {
     const char *data; size_t data_sz;
     int err_num;  // POSIX error code indicating failure fetching data
     GLFWDragOperationType action;  // can be 0 indicating no action
+    bool drop_maybe_a_cancel;  // Happens on wayland compositors that dont implement top-level drag
 } GLFWDragEvent;
 
 typedef void (* GLFWdragsourcefun)(GLFWwindow* window, GLFWDragEvent *ev);
@@ -2206,6 +2210,10 @@ typedef bool (*glfwGrabKeyboard_func)(int);
 GFW_EXTERN glfwGrabKeyboard_func glfwGrabKeyboard_impl;
 #define glfwGrabKeyboard glfwGrabKeyboard_impl
 
+typedef void (*glfwGetKeyboardRepeatDelay_func)(monotonic_t*, monotonic_t*);
+GFW_EXTERN glfwGetKeyboardRepeatDelay_func glfwGetKeyboardRepeatDelay_impl;
+#define glfwGetKeyboardRepeatDelay glfwGetKeyboardRepeatDelay_impl
+
 typedef int (*glfwGetInputMode_func)(GLFWwindow*, int);
 GFW_EXTERN glfwGetInputMode_func glfwGetInputMode_impl;
 #define glfwGetInputMode glfwGetInputMode_impl
@@ -2289,6 +2297,10 @@ GFW_EXTERN glfwSetLiveResizeCallback_func glfwSetLiveResizeCallback_impl;
 typedef GLFWdropeventfun (*glfwSetDropEventCallback_func)(GLFWwindow*, GLFWdropeventfun);
 GFW_EXTERN glfwSetDropEventCallback_func glfwSetDropEventCallback_impl;
 #define glfwSetDropEventCallback glfwSetDropEventCallback_impl
+
+typedef void (*glfwRequestDropUpdate_func)(GLFWwindow*);
+GFW_EXTERN glfwRequestDropUpdate_func glfwRequestDropUpdate_impl;
+#define glfwRequestDropUpdate glfwRequestDropUpdate_impl
 
 typedef int (*glfwRequestDropData_func)(GLFWwindow*, const char*);
 GFW_EXTERN glfwRequestDropData_func glfwRequestDropData_impl;

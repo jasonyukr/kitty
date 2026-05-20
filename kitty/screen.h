@@ -14,6 +14,15 @@
 
 typedef enum ScrollTypes { SCROLL_LINE = -999999, SCROLL_PAGE, SCROLL_FULL } ScrollType;
 
+typedef struct DnDCommand {
+    char type;
+    unsigned more;
+    uint32_t client_id;
+    size_t payload_sz;
+    int32_t cell_x, cell_y, pixel_x, pixel_y;
+    uint32_t operation;
+} DnDCommand;
+
 typedef struct {
     bool mLNM, mIRM, mDECTCEM, mDECSCNM, mDECOM, mDECAWM, mDECCOLM, mDECARM, mDECCKM, mCOLOR_PREFERENCE_NOTIFICATION,
          mBRACKETED_PASTE, mFOCUS_TRACKING, mDECSACE, mHANDLE_TERMIOS_SIGNALS, mINBAND_RESIZE_NOTIFICATION,
@@ -27,7 +36,7 @@ typedef struct {
     bool in_left_half_of_cell;
 } SelectionBoundary;
 
-typedef enum SelectionExtendModes { EXTEND_CELL, EXTEND_WORD, EXTEND_LINE, EXTEND_LINE_FROM_POINT, EXTEND_WORD_AND_LINE_FROM_POINT } SelectionExtendMode;
+typedef enum SelectionExtendModes { EXTEND_CELL, EXTEND_WORD, EXTEND_LINE, EXTEND_LINE_FROM_BEGIN, EXTEND_LINE_FROM_POINT, EXTEND_WORD_AND_LINE_FROM_POINT } SelectionExtendMode;
 
 typedef struct {
     index_type x, x_limit;
@@ -129,6 +138,8 @@ typedef struct {
     ScreenModes modes, saved_modes;
     ColorProfile *color_profile;
     monotonic_t start_visual_bell_at;
+    monotonic_t start_drag_overlay_at;  // 0 = inactive
+    uint8_t drag_overlay_quadrant;      // 1=left 2=right 3=top 4=bottom 0=none
 
     uint8_t *write_buf;
     size_t write_buf_sz, write_buf_used;
@@ -158,6 +169,9 @@ typedef struct {
         unsigned int val;
     } prompt_settings;
     char display_window_char;
+    ProgressBarState progress_state;
+    uint8_t progress_percent; // 0-100
+    monotonic_t progress_indeterminate_anim_at;  // animation start time for indeterminate progress
     struct {
         char ch;
         uint8_t *canvas;
@@ -172,6 +186,7 @@ typedef struct {
     struct {
         hyperlink_id_type id;
         index_type x, y;
+        bool has_detected_url;
     } current_hyperlink_under_mouse;
     struct {
         uint8_t stack[16], count;
@@ -192,6 +207,10 @@ typedef struct {
     ListOfChars *lc;
     monotonic_t parsing_at;
     ExtraCursors extra_cursors;
+    struct {
+        bool active;
+        DnDCommand metadata;
+    } dnd_chunking;
 } Screen;
 
 #define pixel_scroll_enabled(screen) (OPT(pixel_scroll) && !screen->paused_rendering.expires_at && screen->linebuf == screen->main_linebuf)
@@ -290,7 +309,8 @@ void set_active_hyperlink(Screen*, char*, char*);
 hyperlink_id_type screen_mark_hyperlink(Screen*, index_type, index_type);
 void screen_handle_graphics_command(Screen *self, const GraphicsCommand *cmd, const uint8_t *payload);
 void screen_handle_multicell_command(Screen *self, const MultiCellCommand *cmd, const uint8_t *payload);
-bool screen_open_url(Screen*);
+void screen_handle_dnd_command(Screen *self, const DnDCommand *cmd, const uint8_t *payload);
+bool screen_open_url(Screen* self, const char* callback);
 bool screen_set_last_visited_prompt(Screen*, index_type);
 bool screen_select_cmd_output(Screen*, index_type);
 void screen_dirty_sprite_positions(Screen *self);

@@ -759,6 +759,7 @@ extern bool init_crypto_library(PyObject*);
 extern bool init_desktop(PyObject*);
 extern bool init_fonts(PyObject*);
 extern bool init_glfw(PyObject *m);
+extern bool init_dnd(PyObject *m);
 extern bool init_child(PyObject *m);
 extern bool init_state(PyObject *module);
 extern bool init_keys(PyObject *module);
@@ -812,6 +813,7 @@ PyInit_fast_data_types(void) {
     if (!init_ColorProfile(m)) return NULL;
     if (!init_Screen(m)) return NULL;
     if (!init_glfw(m)) return NULL;
+    if (!init_dnd(m)) return NULL;
     if (!init_child(m)) return NULL;
     if (!init_state(m)) return NULL;
     if (!init_keys(m)) return NULL;
@@ -864,6 +866,7 @@ PyInit_fast_data_types(void) {
     PyModule_AddIntMacro(m, ESC_DCS);
     PyModule_AddIntMacro(m, ESC_PM);
     PyModule_AddIntMacro(m, TEXT_SIZE_CODE);
+    PyModule_AddIntMacro(m, DND_CODE);
     PyModule_AddIntMacro(m, COLOR_NOT_SET);
     PyModule_AddIntMacro(m, COLOR_IS_SPECIAL);
     PyModule_AddIntMacro(m, COLOR_IS_INDEX);

@@ -27,7 +27,7 @@ from weakref import WeakValueDictionary
 
 from kitty.types import WindowResizeDrag
 
-from .child import cached_process_data, default_env, set_default_env
+from .child import cached_process_data, default_env, process_data_cache, set_default_env
 from .cli import create_opts, green, parse_args
 from .cli_stub import CLIOptions, SaveAsSessionOptions
 from .clipboard import (
@@ -95,6 +95,7 @@ from .fast_data_types import (
     get_options,
     get_os_window_size,
     get_tab_being_dragged,
+    get_window_being_dragged,
     glfw_get_monitor_workarea,
     global_font_size,
     grab_keyboard,
@@ -120,6 +121,7 @@ from .fast_data_types import (
     set_os_window_size,
     set_os_window_title,
     set_tab_being_dragged,
+    set_window_being_dragged,
     start_drag_with_data,
     thread_write,
     toggle_fullscreen,
@@ -306,7 +308,7 @@ class DumpCommands:  # {{{
                 if isinstance(x, (bytes, memoryview)):
                     return str(x, 'utf-8', 'replace')
                 if isinstance(x, dict):
-                    return json.dumps(x)
+                    return json.dumps({k: fmt(v) for k, v in x.items()})
                 return x
             safe_print(what, *map(fmt, a), flush=True)
 # }}}
@@ -469,6 +471,8 @@ class Boss:
         opts_for_size: Options | None = None,
         startup_id: str | None = None,
         override_title: str | None = None,
+        x: int | None = None,
+        y: int | None = None,
     ) -> int:
         if os_window_id is None:
             size_data = get_os_window_sizing_data(opts_for_size or get_options(), startup_session)
@@ -481,7 +485,7 @@ class Boss:
                 os_window_id = create_os_window(
                         initial_window_size_func(size_data, self.cached_values),
                         pre_show_callback,
-                        wtitle or appname, wname, wclass, wstate, disallow_override_title=bool(wtitle))
+                        wtitle or appname, wname, wclass, wstate, disallow_override_title=bool(wtitle), x=x, y=y)
         else:
             wname = self.args.name or self.args.cls or appname
             wclass = self.args.cls or appname
@@ -952,6 +956,8 @@ class Boss:
                 args.session = ''
             if not os.path.isabs(args.directory):
                 args.directory = os.path.join(data['cwd'], args.directory)
+            from .launch import parse_os_window_position
+            pos_x, pos_y = (None, None) if is_wayland() else parse_os_window_position(args.position)
             from .child import process_env
             clean_env = process_env(data['environ'])
             focused_os_window = os_window_id = 0
@@ -968,11 +974,19 @@ class Boss:
                 wstate = args.start_as if args.start_as and args.start_as != 'normal' else None
                 os_window_id = self.add_os_window(
                     session, wclass=args.cls, wname=args.name, opts_for_size=opts, startup_id=startup_id,
-                    override_title=args.title or None, window_state=wstate)
+                    override_title=args.title or None, window_state=wstate, x=pos_x, y=pos_y)
                 if session.focus_os_window:
                     focused_os_window = os_window_id
-                if opts.background_opacity != get_options().background_opacity:
+                global_opts = get_options()
+                if opts.background_opacity != global_opts.background_opacity:
                     self._set_os_window_background_opacity(os_window_id, opts.background_opacity)
+                if opts.background_image != global_opts.background_image:
+                    self.set_background_image(
+                        opts.background_image[0] if opts.background_image else None, (os_window_id,), False,
+                        layout=opts.background_image_layout,
+                        linear_interpolation=opts.background_image_linear,
+                        tint=opts.background_tint,
+                        tint_gaps=opts.background_tint_gaps)
                 if n := data.get('notify_on_os_window_death'):
                     self.os_window_death_actions[os_window_id] = partial(self.notify_on_os_window_death, n)
             if focused_os_window > 0:
@@ -1388,14 +1402,19 @@ class Boss:
             else:
                 self.startup_first_child(first_os_window_id, startup_sessions=startup_sessions)
 
-        if get_options().update_check_interval > 0 and not self.update_check_started and getattr(sys, 'frozen', False):
+
+        if (opts := get_options()).update_check_interval > 0 and not self.update_check_started and getattr(sys, 'frozen', False):
             from .update_check import run_update_check
             run_update_check(get_options().update_check_interval * 60 * 60)
             self.update_check_started = True
+        if opts.auto_reload_config >= 0 and not hasattr(self, 'config_reload_watcher_process') and opts.all_config_paths:
+            self.config_reload_watcher_process = subprocess.Popen(
+                [kitten_exe(), '__watch_conf__', str(os.getpid()), str(int(opts.auto_reload_config * 1000))] +
+                list(opts.all_config_paths), stdin=subprocess.PIPE)
 
-    def handle_window_title_bar_mouse(self, os_window_id: int, window_id: int, button: int, modifiers: int, action: int) -> None:
+    def handle_window_title_bar_mouse(self, os_window_id: int, window_id: int, x: float, y: float, button: int, modifiers: int, action: int) -> None:
         if tm := self.os_window_map.get(os_window_id):
-            tm.handle_window_title_bar_mouse(window_id, button, modifiers, action)
+            tm.handle_window_title_bar_mouse(window_id, x, y, button, modifiers, action)
 
     def handle_tab_bar_mouse(self, os_window_id: int, x: float, y: float, button: int, modifiers: int, action: int) -> None:
         if tm := self.os_window_map.get(os_window_id):
@@ -1404,6 +1423,10 @@ class Boss:
     def start_tab_drag(self, os_window_id: int, window_id: int, pixels: bytes, width: int, height: int) -> None:
         if tm := self.os_window_map.get(os_window_id):
             tm.start_tab_drag(pixels, width, height)
+
+    def start_window_drag(self, os_window_id: int, window_id: int, pixels: bytes, width: int, height: int) -> None:
+        if tm := self.os_window_map.get(os_window_id):
+            tm.start_window_drag(pixels, width, height)
 
     def on_window_resize(self, os_window_id: int, w: int, h: int, dpi_changed: bool) -> None:
         if dpi_changed:
@@ -1640,6 +1663,12 @@ class Boss:
 
     def dispatch_possible_special_key(self, ev: KeyEvent) -> bool:
         return self.mappings.dispatch_possible_special_key(ev)
+
+    def on_shortcut_key_release(self, ev: KeyEvent) -> bool:
+        window = self.active_window
+        if window is not None:
+            window.finish_scroll_animation()
+        return False
 
     def cancel_current_visual_select(self) -> None:
         if self.current_visual_select:
@@ -1911,6 +1940,13 @@ class Boss:
         if tm is not None:
             tm.mark_tab_bar_dirty()
 
+    def cache_process_data(self, enable: bool) -> None:
+        ' Turn on caching of process data. Must be called in enable/disable pairs. '
+        if enable:
+            self.process_data_cache_active = process_data_cache.start_caching()
+        else:
+            process_data_cache.stop_caching(self.process_data_cache_active)
+
     def update_tab_bar_data(self, os_window_id: int) -> None:
         tm = self.os_window_map.get(os_window_id)
         if tm is not None:
@@ -1929,6 +1965,10 @@ class Boss:
                 for q in self.all_tab_managers:
                     is_dest = q is tm and (in_tab_bar or os_window_id != tab.os_window_id) and not is_leave
                     q.on_tab_drop_move(tab_id, is_dest, x, y)
+            window_id, drag_started = get_window_being_dragged()[:2]
+            if window_id and drag_started:
+                for q in self.all_tab_managers:
+                    q.on_window_drop_move(window_id, (not is_leave) and (q is tm), x, y)
 
     def on_drop(self, os_window_id: int, drop: dict[str, bytes] | int, from_self: bool, x: int, y: int) -> None:
         if isinstance(drop, int):
@@ -1940,6 +1980,14 @@ class Boss:
             self.show_error(_('Drop failed'), f'[{code}] {msg}')
             return
         if (tm := self.os_window_map.get(os_window_id)) is None:
+            return
+        window_mime_key = f'application/net.kovidgoyal.kitty-window-{os.getpid()}'
+        if (widb := drop.get(window_mime_key)):
+            window_id = int(widb)
+            tm.on_window_drop(x, y, window_id)
+            set_window_being_dragged()
+            for q in self.all_tab_managers:
+                q.on_window_drop_move()
             return
         if (tidb := drop.get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}')) and (tab := self.tab_for_id(int(tidb))):
             central, tab_bar = viewport_for_window(os_window_id)[:2]
@@ -1972,6 +2020,27 @@ class Boss:
         self, was_dropped: bool, was_canceled: bool, accepted_mime_type: str, action: int, data: dict[str, bytes] | None,
         needs_toplevel_on_wayland: bool
     ) -> None:
+        window_mime_key = f'application/net.kovidgoyal.kitty-window-{os.getpid()}'
+        if (wid_bytes := (data or {}).get(window_mime_key)):
+            window_id = int(wid_bytes.decode())
+            if get_window_being_dragged()[0] == window_id:
+                # Drop was not handled by on_drop (e.g. dropped outside kitty or on Wayland)
+                for tm in self.all_tab_managers:
+                    for t in tm:
+                        if t.force_show_title_bars:
+                            t.force_show_title_bars = False
+                            t.relayout()
+                set_window_being_dragged()
+                for tm in self.all_tab_managers:
+                    tm.on_window_drop_move()
+                if was_dropped and not was_canceled:
+                    if (window := self.window_id_map.get(window_id)):
+                        src_tab = window.tabref()
+                        src_tm = self.os_window_map.get(src_tab.os_window_id) if src_tab else None
+                        total_windows = sum(len(t) for t in src_tm) if src_tm else 0
+                        if total_windows > 1:
+                            self._move_window_to(window, target_os_window_id='new')
+            return
         if (tab_id := int((data or {}).get(f'application/net.kovidgoyal.kitty-tab-{os.getpid()}', b'0').decode())
         ) and get_tab_being_dragged()[0] == tab_id and (tab := self.tab_for_id(tab_id)):
             if needs_toplevel_on_wayland:
@@ -2302,7 +2371,7 @@ class Boss:
                         cmd + args,
                         stdin=data,
                         env=env,
-                        cwd=w.cwd_of_child,
+                        cwd=CwdRequest(w).cwd_of_child or w.cwd_of_child,
                         overlay_for=w.id,
                         overlay_behind=end_kitten.has_ready_notification,
                     ),
@@ -2346,7 +2415,7 @@ class Boss:
         self.run_kitten_with_metadata('unicode_input', window=self.window_for_dispatch)
 
     @ac('misc', '''
-        Browse and trigger keyboard shortcuts and actions in a searchable overlay.
+        Browse and trigger keyboard shortcuts and actions in a searchable overlay (:doc:`/kittens/command-palette`)
         ''')
     def command_palette(self) -> None:
         from kittens.command_palette.main import collect_keys_data
@@ -2381,7 +2450,10 @@ class Boss:
             if (w := self.window_id_map.get(tab.renaming_in_window)) is not None and w in tab:
                 tab.set_active_window(w)
                 return
-            prefilled = (tab.name or tab.title).strip()
+            if title in ('" "', "' '"):
+                prefilled = ''
+            else:
+                prefilled = (tab.name or tab.title).strip()
             tab_id = tab.id
 
             def on_rename_done(new_title: str) -> None:
@@ -3086,11 +3158,6 @@ class Boss:
         if is_macos:
             from .fast_data_types import cocoa_recreate_global_menu
             cocoa_recreate_global_menu()
-        # Update misc options
-        try:
-            set_background_image(opts.background_image, tuple(self.os_window_map), True, opts.background_image_layout)
-        except Exception as e:
-            log_error(f'Failed to set background image with error: {e}')
         for tm in self.all_tab_managers:
             tm.apply_options()
         # Update colors
@@ -3274,6 +3341,39 @@ class Boss:
             self._cleanup_tab_after_window_removal(src_tab)
             target_tab.make_active()
 
+    def _swap_windows(self, window_a: Window, window_b: Window) -> None:
+        tab = window_a.tabref()
+        if tab is None or tab is not window_b.tabref():
+            return
+        wg_b = tab.windows.group_for_window(window_b)
+        if wg_b is None:
+            return
+        with self.suppress_focus_change_events():
+            tab.windows.set_active_window_group_for(window_a)
+            tab.current_layout.move_window_to_group(tab.windows, wg_b.id)
+            tab.relayout()
+
+    def _insert_window_in_direction(
+        self, window: Window, dest_window: Window, direction: Literal['left', 'right', 'top', 'bottom'],
+    ) -> None:
+        src_tab = window.tabref()
+        dest_tab = dest_window.tabref()
+        if src_tab is None or dest_tab is None:
+            return
+        with self.suppress_focus_change_events():
+            if src_tab is not dest_tab:
+                target_tab_id = dest_tab.id
+                self._move_window_to(window, target_tab_id=target_tab_id)
+                dest_tab_fresh = self.tab_for_id(dest_tab.id)
+                if dest_tab_fresh is None:
+                    return
+                src_tab = dest_tab_fresh
+            layout = src_tab.current_layout
+            horizontal = direction in ('left', 'right')
+            after = direction in ('right', 'bottom')
+            layout.insert_window_next_to(src_tab.windows, window, dest_window, horizontal, after)
+            src_tab.relayout()
+
     def _move_tab_to(self, tab: Tab | None = None, target_os_window_id: int | None = None) -> Tab | None:
         tab = tab or self.active_tab
         if tab is None:
@@ -3366,6 +3466,32 @@ class Boss:
         )
 
     @ac('win', '''
+        Temporarily show window title bars to allow drag-to-reorder
+
+        When window title bars are hidden (because :opt:`window_title_bar_min_windows`
+        is not met), this action forces them temporarily visible so that they can be
+        dragged to reorder windows. After any drag operation completes, the bars are
+        automatically hidden again. Press again to cancel before dragging.
+
+        Has no effect on tabs where title bars are already naturally visible.
+
+        Map an action to this, then press it before dragging a window title bar.
+        ''')
+    def toggle_window_title_bars(self) -> None:
+        tm = self.active_tab_manager
+        if tm is None:
+            return
+        opts = get_options()
+        min_w = opts.window_title_bar_min_windows
+        currently_forced = any(t.force_show_title_bars for t in tm)
+        for t in tm:
+            visible = sum(1 for _ in t.windows.iter_all_layoutable_groups(only_visible=True))
+            naturally_visible = min_w > 0 and visible >= min_w
+            if not naturally_visible:
+                t.force_show_title_bars = not currently_forced
+                t.relayout()
+
+    @ac('win', '''
         Detach a window, moving it to another tab or OS Window
 
         See :ref:`detaching windows <detach_window>` for details.
@@ -3430,9 +3556,12 @@ class Boss:
 
     def set_background_image(
         self, path: str | None, os_windows: tuple[int, ...], configured: bool, layout: str | None, png_data: bytes = b'',
-        linear_interpolation: bool | None = None, tint: float | None = None, tint_gaps: float | None = None
+        linear_interpolation: bool | None = None, tint: float | None = None, tint_gaps: float | None = None,
+        global_index: int = -1, is_increment: bool = False,
     ) -> None:
-        set_background_image(path, os_windows, configured, layout, png_data, linear_interpolation, tint, tint_gaps)
+        set_background_image(
+            path, os_windows, configured, layout, png_data, linear_interpolation, tint, tint_gaps,
+            global_index, is_increment)
 
     # Can be called with kitty -o "map f1 send_test_notification"
     def send_test_notification(self) -> None:
@@ -3605,3 +3734,7 @@ class Boss:
     def search_scrollback_in_active(self) -> None:
         if w := self.active_window:
             w.search_scrollback()
+
+    def copy_or_noop(self) -> None:
+        if w := self.active_window:
+            w.copy_or_noop()

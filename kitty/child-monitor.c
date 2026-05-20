@@ -321,9 +321,10 @@ add_child(ChildMonitor *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-#define schedule_write_to_child_generic(id, num, va_start, get_next_arg, va_end) \
+static const unsigned write_buf_limit = 100 * 1024 * 1024;
+
+#define schedule_write_to_child_generic(id, num, va_start, get_next_arg, va_end, found, too_much_data) \
     ChildMonitor *self = the_monitor; \
-    bool found = false; \
     const char *data; \
     size_t szval, sz = 0; \
     va_start(ap, num); \
@@ -339,8 +340,8 @@ add_child(ChildMonitor *self, PyObject *args) {
             screen_mutex(lock, write); \
             size_t space_left = screen->write_buf_sz - screen->write_buf_used; \
             if (space_left < sz) { \
-                if (screen->write_buf_used + sz > 100 * 1024 * 1024) { \
-                    log_error("Too much data being sent to child with id: %lu, ignoring it", id); \
+                if (screen->write_buf_used + sz > write_buf_limit) { \
+                    too_much_data = true; \
                     screen_mutex(unlock, write); \
                     break; \
                 } \
@@ -366,19 +367,57 @@ add_child(ChildMonitor *self, PyObject *args) {
             break; \
         } \
     } \
-    children_mutex(unlock); \
-    return found;
+    children_mutex(unlock);
 
-bool
-schedule_write_to_child(unsigned long id, unsigned int num, ...) {
-    va_list ap;
-#define get_next_arg(ap) data = va_arg(ap, const char*); szval = va_arg(ap, size_t);
-    schedule_write_to_child_generic(id, num, va_start, get_next_arg, va_end);
-#undef get_next_arg
+void
+schedule_write_to_child_if_possible(id_type id, const char *data, size_t sz, bool *found, bool *too_much_data) {
+    children_mutex(lock);
+    ChildMonitor *self = the_monitor;
+    *found = false; *too_much_data = false;
+    for (size_t i = 0; i < self->count; i++) {
+        if (children[i].id == id) {
+            Screen *screen = children[i].screen;
+            screen_mutex(lock, write);
+            size_t space_left = screen->write_buf_sz - screen->write_buf_used;
+            if (space_left < sz) {
+                if (screen->write_buf_used + sz > write_buf_limit) {
+                    *too_much_data = true;
+                    screen_mutex(unlock, write);
+                    break;
+                }
+                screen->write_buf_sz = screen->write_buf_used + sz;
+                screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);
+                if (screen->write_buf == NULL) { fatal("Out of memory."); }
+            }
+            *found = true;
+            memcpy(screen->write_buf + screen->write_buf_used, data, sz);
+            screen->write_buf_used += sz;
+            if (screen->write_buf_sz > BUFSIZ && screen->write_buf_used < BUFSIZ) {
+                screen->write_buf_sz = BUFSIZ;
+                screen->write_buf = PyMem_RawRealloc(screen->write_buf, screen->write_buf_sz);
+                if (screen->write_buf == NULL) { fatal("Out of memory."); }
+            }
+            if (screen->write_buf_used) wakeup_io_loop(self, false);
+            screen_mutex(unlock, write);
+            break;
+        }
+    }
+    children_mutex(unlock);
 }
 
 bool
-schedule_write_to_child_python(unsigned long id, const char *prefix, PyObject *ap, const char *suffix) {
+schedule_write_to_child(id_type id, unsigned num, ...) {
+    va_list ap;
+    bool too_much_data = false, found = false;
+#define get_next_arg(ap) data = va_arg(ap, const char*); szval = va_arg(ap, size_t);
+    schedule_write_to_child_generic(id, num, va_start, get_next_arg, va_end, found, too_much_data);
+#undef get_next_arg
+    if (too_much_data) log_error("Too much data being written to child with id: %llu dropping it", id);
+    return found;
+}
+
+bool
+schedule_write_to_child_python(id_type id, const char *prefix, PyObject *ap, const char *suffix) {
     if (!PyTuple_Check(ap)) return false;
     bool has_prefix = prefix && prefix[0], has_suffix = suffix && suffix[0];
     const size_t extra = (has_prefix ? 1 : 0) + (has_suffix ? 1 : 0);
@@ -403,7 +442,10 @@ schedule_write_to_child_python(unsigned long id, const char *prefix, PyObject *a
         } \
     } \
 }
-    schedule_write_to_child_generic(id, num, py_start, get_next_arg, py_end);
+    bool found = false, too_much_data = false;
+    schedule_write_to_child_generic(id, num, py_start, get_next_arg, py_end, found, too_much_data);
+    if (too_much_data) log_error("Too much data being written to child with id: %llu dropping it", id);
+    return found;
 #undef py_start
 #undef py_end
 #undef get_next_arg
@@ -719,7 +761,7 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
     bool was_previously_rendered_with_layers = os_window->needs_layers;
     os_window->needs_layers = (
         !global_state.supports_framebuffer_srgb || effective_os_window_alpha(os_window) < 1.f ||
-        os_window->live_resize.in_progress || (os_window->bgimage && os_window->bgimage->texture_id > 0)
+        os_window->live_resize.in_progress || (background_image_for_os_window(os_window) != NULL)
     );
     if (TD.screen && os_window->num_tabs && !os_window->has_too_few_tabs) {
         if (!os_window->tab_bar_data_updated) {
@@ -810,7 +852,7 @@ prepare_to_render_os_window(OSWindow *os_window, monotonic_t now, unsigned int *
                 }
             }
             if (send_cell_data_to_gpu(WD.vao_idx, WD.screen, os_window)) needs_render = true;
-            if (WD.screen->start_visual_bell_at != 0) needs_render = true;
+            if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) needs_render = true;
             // Prepare window title bar screen data for GPU
             WindowRenderData *trd = &w->window_title_render_data;
             if (trd->screen && trd->geometry.bottom > trd->geometry.top && trd->geometry.right > trd->geometry.left) {
@@ -847,11 +889,11 @@ thumbnail_callback(OSWindow *os_window) {
         double scale = 300. / vw;
         thumb_h = (unsigned)(vh * scale + 0.5f);
     }
-    RAII_PyObject(pixels, PyBytes_FromStringAndSize(NULL, 4 * thumb_w * thumb_h));
+    RAII_PyObject(pixels, PyBytes_FromStringAndSize(NULL, (Py_ssize_t)4 * thumb_w * thumb_h));
     if (pixels && global_state.boss) {
         take_screenshot_of_rectangular_region(
             os_window, region, (unsigned char*)PyBytes_AS_STRING(pixels), &thumb_w, &thumb_h);
-        _PyBytes_Resize(&pixels, 4 * thumb_w *thumb_h);
+        _PyBytes_Resize(&pixels, (Py_ssize_t)4 * thumb_w * thumb_h);
         PyObject *r = PyObject_CallMethod(
             global_state.boss, tc.callback, "KKOII", os_window->id, tc.window, pixels, thumb_w, thumb_h);
         if (!r) PyErr_Print(); else Py_DECREF(r);
@@ -876,7 +918,7 @@ render_prepared_os_window(OSWindow *os_window, unsigned int active_window_id, co
             bool is_active_window = i == tab->active_window;
             if (is_active_window) active_window = w;
             draw_cells(&WD, os_window, is_active_window, false, num_of_visible_windows == 1, w);
-            if (WD.screen->start_visual_bell_at != 0) set_maximum_wait(ANIMATION_SAMPLE_WAIT);
+            if (WD.screen->start_visual_bell_at | WD.screen->start_drag_overlay_at) set_maximum_wait(ANIMATION_SAMPLE_WAIT);
             WindowRenderData *trd = &w->window_title_render_data;
             if (trd->screen && trd->geometry.right > trd->geometry.left && trd->geometry.bottom > trd->geometry.top)
                 draw_cells(trd, os_window, i == tab->active_window, true, false, NULL);
@@ -941,7 +983,7 @@ render_os_window(OSWindow *w, monotonic_t now, bool scan_for_animated_images) {
     if (!w->fonts_data) { log_error("No fonts data found for window id: %llu", w->id); return false; }
     if (prepare_to_render_os_window(w, now, &active_window_id, &active_window_bg, &num_visible_windows, &all_windows_have_same_bg, scan_for_animated_images)) needs_render = true;
     if (w->last_active_window_id != active_window_id || w->last_active_tab != w->active_tab || w->focused_at_last_render != w->is_focused) needs_render = true;
-    if (w->render_calls < 3 && w->bgimage && w->bgimage->texture_id) needs_render = true;
+    if (w->render_calls < 3 && background_image_for_os_window(w) != NULL) needs_render = true;
     if (needs_render) render_prepared_os_window(w, active_window_id, active_window_bg, num_visible_windows, all_windows_have_same_bg);
     if (w->is_focused) change_menubar_title(w->window_title);
     return needs_render;
@@ -959,6 +1001,7 @@ render(monotonic_t now, bool input_read) {
 
     const bool scan_for_animated_images = global_state.check_for_active_animated_images;
     global_state.check_for_active_animated_images = false;
+    call_boss(cache_process_data, "O", Py_True);
 
     for (size_t i = 0; i < global_state.num_os_windows; i++) {
         OSWindow *w = global_state.os_windows + i;
@@ -979,6 +1022,7 @@ render(monotonic_t now, bool input_read) {
 
     }
     last_render_at = now;
+    call_boss(cache_process_data, "O", Py_False);
 #undef TD
 }
 
@@ -1307,6 +1351,8 @@ process_cocoa_pending_actions(void) {
     if (cocoa_pending_actions[HIDE_OTHERS]) { call_boss(hide_macos_other_apps, NULL); }
     if (cocoa_pending_actions[MINIMIZE]) { call_boss(minimize_macos_window, NULL); }
     if (cocoa_pending_actions[QUIT]) { call_boss(quit, NULL); }
+    if (cocoa_pending_actions[PASTE_FROM_CLIPBOARD]) { call_boss(paste_from_clipboard, NULL); }
+    if (cocoa_pending_actions[COPY_OR_NOOP]) { call_boss(copy_or_noop, NULL); }
     if (cocoa_pending_actions_data.wd) {
         if (cocoa_pending_actions[NEW_OS_WINDOW_WITH_WD]) { call_boss(new_os_window_with_wd, "sO", cocoa_pending_actions_data.wd, Py_True); }
         if (cocoa_pending_actions[NEW_TAB_WITH_WD]) { call_boss(new_tab_with_wd, "sO", cocoa_pending_actions_data.wd, Py_True); }
@@ -1896,7 +1942,7 @@ write_to_peer(Peer *peer) {
     else if (n < 0) {
         if (errno != EINTR) { log_error("write() to peer socket failed with error: %s", strerror(errno)); peer->write.used = 0; peer->write.failed = true; }
     } else {
-        if ((size_t)n > peer->write.used) memmove(peer->write.data, peer->write.data + n, peer->write.used - n);
+        if ((size_t)n < peer->write.used) memmove(peer->write.data, peer->write.data + n, peer->write.used - n);
         peer->write.used -= n;
     }
     talk_mutex(unlock);

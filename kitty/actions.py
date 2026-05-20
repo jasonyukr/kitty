@@ -2,7 +2,7 @@
 # License: GPLv3 Copyright: 2021, Kovid Goyal <kovid at kovidgoyal.net>
 
 import inspect
-from typing import NamedTuple, cast
+from typing import NamedTuple
 
 from .boss import Boss
 from .tabs import Tab
@@ -50,7 +50,7 @@ def get_all_actions() -> dict[ActionGroup, list[Action]]:
         short_help = first
         long_help = '\n'.join(lines).strip()
         assert spec.group in groups
-        return Action(getattr(x, '__name__'), cast(ActionGroup, spec.group), short_help, long_help)
+        return Action(getattr(x, '__name__'), spec.group, short_help, long_help)
 
     seen = set()
     for cls in (Window, Tab, Boss):
@@ -87,8 +87,13 @@ def as_rst() -> str:
         return group_title(x).lower()
 
     def kitten_link(text: str) -> str:
-        x = text.split()
-        return f':doc:`kittens/{x[2]}`' if len(x) > 2 else ''
+        # skip any --flag tokens at the start, then key, then 'kitten', then kitten name
+        parts = text.split()
+        # find 'kitten' token and take the next one as the kitten name
+        for i, p in enumerate(parts):
+            if p == 'kitten' and i + 1 < len(parts):
+                return f':doc:`kittens/{parts[i + 1]}`'
+        return ''
 
     for group in sorted(allg, key=key):
         title = group_title(group)

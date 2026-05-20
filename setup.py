@@ -656,7 +656,7 @@ def kitty_env(args: Options) -> Env:
     if is_macos:
         platform_libs = [
             '-framework', 'Carbon', '-framework', 'CoreText', '-framework', 'CoreGraphics',
-            '-framework', 'AudioToolbox',
+            '-framework', 'AudioToolbox', '-framework', 'IOKit',
         ]
         test_program_src = '''#include <UserNotifications/UserNotifications.h>
         int main(void) { return 0; }\n'''
@@ -952,7 +952,7 @@ def add_builtin_fonts(args: Options) -> None:
             lines = subprocess.check_output([
                 'fc-list', '--format', '%{file}\n%{postscriptname}', f':postscriptname={psname}']).decode().splitlines()
             if len(lines) != 2:
-                raise SystemExit(f'fc-match returned unexpected output: {lines}')
+                raise SystemExit(f'fc-list returned unexpected output: {lines}')
             if lines[1] != psname:
                 raise SystemExit(f'The font {human_name!r} was not found on your system, please install it')
             font_file = lines[0]
@@ -1727,6 +1727,7 @@ def macos_info_plist(for_quake: str = '') -> bytes:
         CFBundleAllowMixedLocalizations=True,
         TICapsLockLanguageSwitchCapable=True,
         # User Interface and Graphics
+        CFBundleIconName=appname,
         CFBundleIconFile=f'{appname}.icns',
         NSHighResolutionCapable=True,
         NSSupportsAutomaticGraphicsSwitching=True,
@@ -1770,24 +1771,8 @@ def macos_info_plist(for_quake: str = '') -> bytes:
 
 
 def create_macos_app_icon(where: str = 'Resources') -> None:
-    iconset_dir = os.path.abspath(os.path.join('logo', f'{appname}.iconset'))
-    icns_dir = os.path.join(where, f'{appname}.icns')
-    try:
-        subprocess.check_call([
-            'iconutil', '-c', 'icns', iconset_dir, '-o', icns_dir
-        ])
-    except FileNotFoundError:
-        print(f'{error("iconutil not found")}, using png2icns (without retina support) to convert the logo', file=sys.stderr)
-        subprocess.check_call([
-            'png2icns', icns_dir
-        ] + [os.path.join(iconset_dir, logo) for logo in [
-            # png2icns does not support retina icons, so only pass the non-retina icons
-            'icon_16x16.png',
-            'icon_32x32.png',
-            'icon_128x128.png',
-            'icon_256x256.png',
-            'icon_512x512.png',
-        ]])
+    for x in (f'{appname}.icns', 'Assets.car'):
+        shutil.copy(os.path.join('logo', x), os.path.join(where, x))
 
 
 quake_name = f'{appname}-quick-access'

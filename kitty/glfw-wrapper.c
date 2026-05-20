@@ -296,6 +296,9 @@ load_glfw(const char* path) {
     *(void **) (&glfwGrabKeyboard_impl) = dlsym(handle, "glfwGrabKeyboard");
     if (glfwGrabKeyboard_impl == NULL) fail("Failed to load glfw function glfwGrabKeyboard with error: %s", dlerror());
 
+    *(void **) (&glfwGetKeyboardRepeatDelay_impl) = dlsym(handle, "glfwGetKeyboardRepeatDelay");
+    if (glfwGetKeyboardRepeatDelay_impl == NULL) fail("Failed to load glfw function glfwGetKeyboardRepeatDelay with error: %s", dlerror());
+
     *(void **) (&glfwGetInputMode_impl) = dlsym(handle, "glfwGetInputMode");
     if (glfwGetInputMode_impl == NULL) fail("Failed to load glfw function glfwGetInputMode with error: %s", dlerror());
 
@@ -358,6 +361,9 @@ load_glfw(const char* path) {
 
     *(void **) (&glfwSetDropEventCallback_impl) = dlsym(handle, "glfwSetDropEventCallback");
     if (glfwSetDropEventCallback_impl == NULL) fail("Failed to load glfw function glfwSetDropEventCallback with error: %s", dlerror());
+
+    *(void **) (&glfwRequestDropUpdate_impl) = dlsym(handle, "glfwRequestDropUpdate");
+    if (glfwRequestDropUpdate_impl == NULL) fail("Failed to load glfw function glfwRequestDropUpdate with error: %s", dlerror());
 
     *(void **) (&glfwRequestDropData_impl) = dlsym(handle, "glfwRequestDropData");
     if (glfwRequestDropData_impl == NULL) fail("Failed to load glfw function glfwRequestDropData with error: %s", dlerror());

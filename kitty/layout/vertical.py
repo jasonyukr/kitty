@@ -9,7 +9,7 @@ from kitty.types import Edges, NeighborsMap, WindowMapper
 from kitty.typing_compat import EdgeLiteral, WindowType
 from kitty.window_list import WindowGroup, WindowList
 
-from .base import BorderLine, Layout, LayoutData, LayoutDimension, lgd
+from .base import BorderLine, DragOverlayMode, Layout, LayoutData, LayoutDimension, lgd
 
 
 def borders(
@@ -64,6 +64,7 @@ class Vertical(Layout):
     name = 'vertical'
     main_is_horizontal = False
     no_minimal_window_borders = True
+    drag_overlay_mode = DragOverlayMode.axis_y
     main_axis_layout = Layout.ylayout
     perp_axis_layout = Layout.xlayout
 
@@ -155,5 +156,6 @@ class Horizontal(Vertical):
 
     name = 'horizontal'
     main_is_horizontal = True
+    drag_overlay_mode = DragOverlayMode.axis_x
     main_axis_layout = Layout.xlayout
     perp_axis_layout = Layout.ylayout

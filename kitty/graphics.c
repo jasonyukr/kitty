@@ -555,7 +555,7 @@ load_image_data(GraphicsManager *self, Image *img, const GraphicsCommand *g, con
         case 'd':  // direct
             if (load_data->buf_capacity - load_data->buf_used < g->payload_sz) {
                 if (load_data->buf_used + g->payload_sz > MAX_DATA_SZ || data_fmt != PNG) ABRT("EFBIG", "Too much data");
-                load_data->buf_capacity = MIN(2 * load_data->buf_capacity, MAX_DATA_SZ);
+                load_data->buf_capacity = MAX(MIN(2 * load_data->buf_capacity, MAX_DATA_SZ), load_data->buf_used + g->payload_sz);
                 load_data->buf = realloc(load_data->buf, load_data->buf_capacity);
                 if (load_data->buf == NULL) {
                     load_data->buf_capacity = 0; load_data->buf_used = 0;
@@ -1827,9 +1827,10 @@ handle_compose_command(GraphicsManager *self, bool *is_dirty, const GraphicsComm
         set_command_failed_response("ENOENT", "No destination frame number %u exists in image id: %u\n", g->other_frame_number, img->client_id);
         return;
     }
-    const unsigned int width = g->width ? g->width : img->width;
-    const unsigned int height = g->height ? g->height : img->height;
-    const unsigned int dest_x = g->x_offset, dest_y = g->y_offset, src_x = g->cell_x_offset, src_y = g->cell_y_offset;
+    // Use uint64_t to avoid overflow when testing for validity. All dimensions are 32bit numbers.
+    const uint64_t width = g->width ? g->width : img->width;
+    const uint64_t height = g->height ? g->height : img->height;
+    const uint64_t dest_x = g->x_offset, dest_y = g->y_offset, src_x = g->cell_x_offset, src_y = g->cell_y_offset;
     if (dest_x + width > img->width || dest_y + height > img->height) {
         set_command_failed_response("EINVAL", "The destination rectangle is out of bounds");
         return;

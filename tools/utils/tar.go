@@ -182,6 +182,7 @@ func ExtractAllFromTar(tr *tar.Reader, dest_path string, optss ...TarExtractOpti
 	dest_path = filepath.Clean(dest_path)
 
 	mode := func(hdr int64) fs.FileMode {
+		// yes, we really want to preserve sticky bits and setuid/setgid bits
 		return fs.FileMode(hdr) & (fs.ModePerm | fs.ModeSetgid | fs.ModeSetuid | fs.ModeSticky)
 	}
 
@@ -249,6 +250,12 @@ func ExtractAllFromTar(tr *tar.Reader, dest_path string, optss ...TarExtractOpti
 			link_target := hdr.Linkname
 			if !filepath.IsAbs(link_target) {
 				link_target = filepath.Join(filepath.Dir(dest), link_target)
+			}
+			if link_target, err = EvalSymlinksThatExist(link_target); err != nil {
+				return
+			}
+			if !strings.HasPrefix(link_target, needed_prefix) {
+				continue
 			}
 			if err = os.Link(link_target, dest); err != nil {
 				return

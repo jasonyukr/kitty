@@ -12,6 +12,7 @@
 #include <Availability.h>
 #include <Carbon/Carbon.h>
 #include <Cocoa/Cocoa.h>
+#import <IOKit/IOKitLib.h>
 #include <UserNotifications/UserNotifications.h>
 #import <AudioToolbox/AudioServices.h>
 
@@ -267,6 +268,8 @@ PENDING(hide_macos_app, HIDE)
 PENDING(hide_macos_other_apps, HIDE_OTHERS)
 PENDING(minimize_macos_window, MINIMIZE)
 PENDING(quit, QUIT)
+PENDING(paste_from_clipboard, PASTE_FROM_CLIPBOARD)
+PENDING(copy_or_noop, COPY_OR_NOOP)
 
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action == @selector(toggle_macos_secure_keyboard_entry:)) {
@@ -290,6 +293,21 @@ PENDING(quit, QUIT)
         item.action == @selector(detach_tab:))
     {
         if (![NSApp keyWindow]) return NO;
+    } else if (item.action == @selector(paste_from_clipboard:)) {
+        if (![NSApp keyWindow]) return NO;
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        if (![pb stringForType:NSPasteboardTypeString]) return NO;
+    } else if (item.action == @selector(copy_or_noop:)) {
+        if (![NSApp keyWindow]) return NO;
+        OSWindow *osw = current_os_window();
+        if (osw && osw->num_tabs > osw->active_tab) {
+            Tab *tab = osw->tabs + osw->active_tab;
+            if (tab->num_windows > tab->active_window) {
+                Screen *screen = tab->windows[tab->active_window].render_data.screen;
+                if (screen && screen_has_selection(screen)) return YES;
+            }
+        }
+        return NO;
     }
     return YES;
 }
@@ -323,6 +341,7 @@ typedef struct {
     GlobalShortcut toggle_macos_secure_keyboard_entry, toggle_fullscreen, open_kitty_website;
     GlobalShortcut hide_macos_app, hide_macos_other_apps, minimize_macos_window, quit, search_scrollback;
     GlobalShortcut macos_cycle_through_os_windows, macos_cycle_through_os_windows_backwards;
+    GlobalShortcut paste_from_clipboard, copy_or_noop;
 } GlobalShortcuts;
 static GlobalShortcuts global_shortcuts;
 
@@ -342,6 +361,7 @@ cocoa_set_global_shortcut(PyObject *self UNUSED, PyObject *args) {
     else Q(open_kitty_website); else Q(hide_macos_app); else Q(hide_macos_other_apps);
     else Q(minimize_macos_window); else Q(quit); else Q(search_scrollback);
     else Q(macos_cycle_through_os_windows); else Q(macos_cycle_through_os_windows_backwards);
+    else Q(paste_from_clipboard); else Q(copy_or_noop);
 #undef Q
     if (gs == NULL) { PyErr_SetString(PyExc_KeyError, "Unknown shortcut name"); return NULL; }
     int cocoa_mods;
@@ -797,6 +817,9 @@ cocoa_create_global_menu(void) {
     MENU_ITEM(editMenu, @"Clear Screen", clear_screen);
     MENU_ITEM(editMenu, @"Clear Last Command", clear_last_command);
     MENU_ITEM(editMenu, @"Find", search_scrollback);
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    MENU_ITEM(editMenu, @"Copy", copy_or_noop);
+    MENU_ITEM(editMenu, @"Paste", paste_from_clipboard);
     [editMenu release];
 
     NSMenuItem* windowMenuItem =
@@ -1360,9 +1383,33 @@ cocoa_clear_dock_badge_if_set(void) {
 
 // }}}
 
+static PyObject*
+cocoa_get_machine_id(PyObject *self UNUSED, PyObject *args UNUSED) {
+    static char ans[1024] = {0};
+    static bool done = false;
+    if (!done) {
+        done = true;
+        CFMutableDictionaryRef matching = IOServiceMatching("IOPlatformExpertDevice");
+        // Get the matching service
+        io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);
+        if (service) {
+            CFTypeRef uuid = IORegistryEntryCreateCFProperty(service, CFSTR("IOPlatformUUID"), kCFAllocatorDefault, 0);
+            if (uuid) {
+                // Transfer ownership to NSString using ARC __bridge_transfer
+                NSString *s = (NSString*)uuid;
+                [s getCString:ans maxLength:sizeof(ans) encoding:NSUTF8StringEncoding];
+            }
+            // Release the I/O object
+            IOObjectRelease(service);
+        }
+    }
+    return PyUnicode_FromString(ans);
+}
+
 static PyMethodDef module_methods[] = {
     {"cocoa_play_system_sound_by_id_async", play_system_sound_by_id_async, METH_O, ""},
     {"cocoa_get_lang", (PyCFunction)cocoa_get_lang, METH_NOARGS, ""},
+    {"cocoa_get_machine_id", (PyCFunction)cocoa_get_machine_id, METH_NOARGS, ""},
     {"cocoa_set_global_shortcut", (PyCFunction)cocoa_set_global_shortcut, METH_VARARGS, ""},
     {"cocoa_send_notification", (PyCFunction)(void(*)(void))cocoa_send_notification, METH_VARARGS | METH_KEYWORDS, ""},
     {"cocoa_remove_delivered_notification", (PyCFunction)cocoa_remove_delivered_notification, METH_O, ""},

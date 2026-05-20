@@ -6,9 +6,10 @@
 
 import re
 import sys
+from collections.abc import Iterator, Sequence
 from enum import Enum, auto
 from functools import lru_cache
-from typing import Any, Iterator, NamedTuple, Sequence
+from typing import Any, NamedTuple
 
 if getattr(sys, 'running_from_setup', False):
     is_macos = 'darwin' in sys.platform.lower()
@@ -489,7 +490,8 @@ specified in the session file gets overriden.
 
 
 --position
-The position, for example 10x20, on screen at which to place the first kitty OS Window.
+The position, for example 10x20, on screen at which to place the first kitty OS Window
+created by this invocation.
 This may or may not work depending on the policies of the desktop
 environment/window manager. It never works on Wayland.
 See also :opt:`remember_window_position` to have kitty automatically try
