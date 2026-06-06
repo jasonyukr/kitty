@@ -642,8 +642,12 @@ class Boss:
         return True
 
     def set_active_window(
-        self, window: Window, switch_os_window_if_needed: bool = False, for_keep_focus: bool = False, activation_token: str = ''
+        self, window: Window | int, switch_os_window_if_needed: bool = False, for_keep_focus: bool = False, activation_token: str = ''
     ) -> int | None:
+        if isinstance(window, int):
+            window = self.window_id_map.get(window, 0)
+            if isinstance(window, int):
+                return None
         for os_window_id, tm in self.os_window_map.items():
             for tab in tm:
                 for w in tab:
@@ -3200,6 +3204,8 @@ class Boss:
         opts = load_config(*paths, overrides=final_overrides or None, accumulate_bad_lines=bad_lines)
         if bad_lines:
             self.show_bad_config_lines(bad_lines)
+        from .fonts.render import clear_font_caches
+        clear_font_caches()
         self.apply_new_options(opts)
         from .open_actions import clear_caches
         clear_caches()
@@ -3735,6 +3741,7 @@ class Boss:
         if w := self.active_window:
             w.search_scrollback()
 
-    def copy_or_noop(self) -> None:
+    def copy_or_noop(self) -> bool | None:
         if w := self.active_window:
-            w.copy_or_noop()
+            return w.copy_or_noop()
+        return True
