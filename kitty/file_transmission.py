@@ -547,7 +547,7 @@ class DestFile:
             if self.actual_file is None:
                 self.make_parent_dirs()
                 self.unlink_existing_if_needed()
-                flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_BINARY', 0)
+                flags = os.O_RDWR | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
                 self.actual_file = open(os.open(self.name, flags, self.permissions), mode='r+b', closefd=True)
             af = self.actual_file
             if decompressed or is_last:
@@ -1172,7 +1172,8 @@ class FileTransmission:
         window = boss.window_id_map.get(self.window_id)
         if window is not None:
             boss.confirm(_(
-                'The remote machine wants to read some files from this computer. Do you want to allow the transfer?'),
+                'The remote machine wants to read some files from this computer.'
+                ' Only allow transfers to computers you trust. Do you want to allow the transfer?'),
                 self.handle_receive_confirmation, asd_id, window=window,
             )
 
@@ -1202,7 +1203,8 @@ class FileTransmission:
         window = boss.window_id_map.get(self.window_id)
         if window is not None:
             boss.confirm(_(
-                'The remote machine wants to send some files to this computer. Do you want to allow the transfer?'),
+                'The remote machine wants to send some files to this computer.'
+                ' Only allow transfers from computers you trust. Do you want to allow the transfer?'),
                 self.handle_send_confirmation, ar_id, window=window,
             )
 

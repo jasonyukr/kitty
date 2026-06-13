@@ -33,7 +33,7 @@ layout_choices = 'tiled,scaled,mirror-tiled,clamped,centered,cscaled,configured'
 
 class SetBackgroundImage(RemoteCommand):
 
-    protocol_spec = __doc__ = '''
+    protocol_spec = __doc__ = f'''
     data+/str: Chunk of at most 512 bytes of PNG data, base64 encoded. Must send an empty chunk to indicate end of image. \
     Or the special value - to indicate image must be removed. Or the value index:idx to change image.
     match/str: Window to change opacity in
@@ -144,6 +144,8 @@ failed, the command will exit with a success code.
         windows = self.windows_for_payload(boss, window, payload_get, window_match_name='match')
         os_windows = tuple({w.os_window_id for w in windows if w})
         layout = payload_get('layout')
+        if layout == 'configured':
+            layout = None
         try:
             boss.set_background_image(
                 path, os_windows, payload_get('configured'), layout, tfile.getvalue(),

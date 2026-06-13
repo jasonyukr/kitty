@@ -173,6 +173,42 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
+0.47.3 [2026-06-12]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- macOS: Show a key symbol on the active tab if the macOS Secure Input feature is enabled
+
+- Fix regression that broke unserialization of splits layout in previous release (:iss:`10124`)
+
+- Fix :opt:`focus_follows_mouse` switching the active window when returning to a desktop/space, even though the mouse did not move. Now the window under a stationary cursor is left alone, while moving the mouse across windows still switches focus as before.
+
+- Sanitise responses to color control escape codes to avoid command injection for shells that do not use the kitty keyboard protocol (:cve:`2026-54057`)
+
+- choose fonts kitten: Fix a rare timing based race causing kitten to crash at startup (:pull:`10128`)
+
+- Wayland: Fix mouse input getting broken when starting a tab drag and releasing the mouse button before the drag is actually registered (:pull:`10136`)
+
+
+0.47.2 [2026-06-07]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- Allow dragging to move scrollbar after clicking on track when :opt:`scrollbar_jump_on_click` is enabled (:pull:`10085`)
+
+- macOS: Fix regression in 0.47.0 that broke passing :kbd:`Cmd+C` on to terminal applications when no text is selected (:iss:`10087`)
+
+- ``kitten @ set-background-image``: Fix ``--layout=configured`` changing layout to centered instead (:iss:`10089`)
+
+- Splits layout: add an ``equalize`` action and an ``equalize_on_close`` option to redistribute split space proportionally (:iss:`3489`)
+
+- Fix matching var/env on tabs not working as expected (:iss:`10095`)
+
+- When watching for changed config files do not recursively watch all sub directories of the directory containing the config file (:iss:`10102`)
+
+- File transfer protocol: use O_NOFOLLOW when opening regular files (:cve:`2026-54055`)
+
+- dnd kitten: Protect against drops from malicious sources (:cve:`2026-54056`)
+
+
 0.47.1 [2026-05-28]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -476,7 +476,9 @@ inform_compositor_of_window_geometry(_GLFWwindow *window, const char *event) {
 #define geometry window->wl.decorations.geometry
     debug("Setting window %llu \"visible area\" geometry in %s event: x=%d y=%d %dx%d viewport: %dx%d\n",
             window->id, event, geometry.x, geometry.y, geometry.width, geometry.height, window->wl.width, window->wl.height);
-    xdg_surface_set_window_geometry(window->wl.xdg.surface, geometry.x, geometry.y, geometry.width, geometry.height);
+    // Layer-shell surfaces have no xdg_surface; geometry is managed via the
+    // layer surface, so skip the xdg call to avoid a NULL proxy dereference.
+    if (window->wl.xdg.surface) xdg_surface_set_window_geometry(window->wl.xdg.surface, geometry.x, geometry.y, geometry.width, geometry.height);
     if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
 #undef geometry
 }
@@ -3497,6 +3499,17 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
         return ENOTSUP;
     }
 
+    if (_glfw.wl.pointer_button_count == 0) {
+        // start_drag requires the serial of an active pointer implicit grab,
+        // without one the compositor silently ignores the request and the
+        // data source never receives any events, so fail early instead.
+        // This can happen as drags are started asynchronously and the button
+        // may have been released by the time we get here. EPERM matches what
+        // start_window_drag() in kitty/glfw.c reports for this situation.
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Refusing to start drag without an active pointer implicit grab");
+        return EPERM;
+    }
+
     // Create the data source
     _glfw.wl.drag.source = wl_data_device_manager_create_data_source(_glfw.wl.dataDeviceManager);
     if (!_glfw.wl.drag.source) {
@@ -3569,7 +3582,7 @@ _glfwPlatformStartDrag(_GLFWwindow* window, const GLFWimage* thumbnail) {
     wl_data_device_start_drag(
         _glfw.wl.dataDevice, _glfw.wl.drag.source, window->wl.surface,
         _glfw.wl.drag.toplevel_drag ? NULL : _glfw.wl.drag.drag_icon,
-        _glfw.wl.pointer_serial);
+        _glfw.wl.pointer_grab_serial);
 
     if (_glfw.wl.drag.toplevel_drag) {
         // Attach the toplevel AFTER start_drag, otherwise doesnt work on mutter

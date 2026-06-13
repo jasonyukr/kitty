@@ -70,6 +70,11 @@ kitty graphics protocol.
 Markdown viewer that can render big headers with the text-sizing-protocol, and
 also render images with the kitty graphics protocol.
 
+`kmv <https://github.com/parf/Kitty-Markdown-Viewer>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Markdown viewer that can render big headers with the text-sizing-protocol, and
+also render images with the kitty graphics protocol.
+
 .. _tool_term_image:
 
 `term-image <https://github.com/AnonymouX47/term-image>`__
@@ -321,6 +326,13 @@ Various image viewing plugins for editors
 
 Scrollback manipulation
 -------------------------
+
+.. tool_kitty_search_incremental:
+
+`kitty-search-incremental <https://github.com/Mobinshahidi/kitty-search>`_
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Incremental scrollback search with live results, regex and literal modes,
+case-sensitivity toggle, match counter, and auto-scroll to the matching line.
 
 .. tool_kitty_scrollback_nvim:
 

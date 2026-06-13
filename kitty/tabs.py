@@ -841,7 +841,10 @@ class Tab:  # {{{
 
     def post_window_removal_update(self) -> None:
         self.mark_tab_bar_dirty()
-        self.relayout()
+        self.relayout()  # prunes the closed window from the layout's internal tree
+        # equalize_on_close rebalances the pruned tree, requiring a second relayout
+        if self.current_layout.on_window_removed(self.windows):
+            self.relayout()
         active_window = self.active_window
         if active_window:
             self.title_changed(active_window)
@@ -1070,49 +1073,57 @@ class Tab:  # {{{
         self, field: str, query: str, active_tab_manager: Optional['TabManager'] = None,
         active_session: str = '', most_recent_session: str = ''
     ) -> bool:
-        if field == 'title':
-            return re.search(query, self.effective_title) is not None
-        if field == 'id':
-            return query == str(self.id)
-        if field in ('window_id', 'window_title'):
-            field = field.partition('_')[-1]
-            for w in self:
-                if w.matches_query(field, query):
-                    return True
-            return False
-        if field == 'index':
-            if active_tab_manager and len(active_tab_manager.tabs):
-                idx = (int(query) + len(active_tab_manager.tabs)) % len(active_tab_manager.tabs)
-                return active_tab_manager.tabs[idx] is self
-            return False
-        if field == 'recent':
-            if active_tab_manager and len(active_tab_manager.tabs):
-                return self is active_tab_manager.nth_active_tab(int(query))
-            return False
-        if field == 'state':
-            if query == 'active':
-                tm = self.tab_manager_ref()
-                return tm is not None and self is tm.active_tab
-            if query == 'focused':
-                return active_tab_manager is not None and self is active_tab_manager.active_tab and self.os_window_id == last_focused_os_window_id()
-            if query == 'needs_attention':
+        match field:
+            case 'title':
+                return re.search(query, self.effective_title) is not None
+            case 'id':
+                return query == str(self.id)
+            case 'window_id' | 'window_title':
+                field = field.partition('_')[-1]
                 for w in self:
-                    if w.needs_attention:
+                    if w.matches_query(field, query):
                         return True
-            if query == 'parent_active':
-                return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager
-            if query == 'parent_focused':
-                return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
-            if query == 'focused_os_window':
-                return self.os_window_id == last_focused_os_window_id()
-            return False
-        if field == 'session':
-            match query:
-                case '.':
-                    return self.created_in_session_name == active_session
-                case '~':
-                    return self.created_in_session_name == active_session or self.created_in_session_name == most_recent_session
-            return re.search(query, self.created_in_session_name) is not None
+                return False
+            case 'var' | 'env':
+                for w in self:
+                    if w.matches_query(field, query):
+                        return True
+                return False
+            case 'index':
+                if active_tab_manager and len(active_tab_manager.tabs):
+                    idx = (int(query) + len(active_tab_manager.tabs)) % len(active_tab_manager.tabs)
+                    return active_tab_manager.tabs[idx] is self
+                return False
+            case 'recent':
+                if active_tab_manager and len(active_tab_manager.tabs):
+                    return self is active_tab_manager.nth_active_tab(int(query))
+                return False
+            case 'state':
+                match query:
+                    case 'active':
+                        tm = self.tab_manager_ref()
+                        return tm is not None and self is tm.active_tab
+                    case 'focused':
+                        return active_tab_manager is not None and self is active_tab_manager.active_tab and self.os_window_id == last_focused_os_window_id()
+                    case 'needs_attention':
+                        for w in self:
+                            if w.needs_attention:
+                                return True
+                    case 'parent_active':
+                        return active_tab_manager is not None and self.tab_manager_ref() is active_tab_manager
+                    case 'parent_focused':
+                        return active_tab_manager is not None and \
+                                self.tab_manager_ref() is active_tab_manager and self.os_window_id == last_focused_os_window_id()
+                    case 'focused_os_window':
+                        return self.os_window_id == last_focused_os_window_id()
+                return False
+            case 'session':
+                match query:
+                    case '.':
+                        return self.created_in_session_name == active_session
+                    case '~':
+                        return self.created_in_session_name == active_session or self.created_in_session_name == most_recent_session
+                return re.search(query, self.created_in_session_name) is not None
         return False
 
     def __iter__(self) -> Iterator[Window]:
@@ -1721,6 +1732,9 @@ class TabManager:  # {{{
         if (td := self.tab_being_dropped) is None:
             return
         if (tab := get_boss().tab_for_id(td.data.tab_id)) is None:
+            self.tab_being_dropped = None
+            set_tab_being_dragged()
+            self.layout_tab_bar()
             return
         if not bypass_move:
             self.on_tab_drop_move(td.data.tab_id, True, x, y)
@@ -1768,7 +1782,12 @@ class TabManager:  # {{{
                 drag_data = {
                     f'application/net.kovidgoyal.kitty-tab-{os.getpid()}': str(tab.id).encode(),
                 }
-                start_drag_with_data(self.os_window_id, drag_data, thumbnails)
+                try:
+                    start_drag_with_data(self.os_window_id, drag_data, thumbnails)
+                except OSError as e:
+                    log_error(f'Failed to start tab drag: {e}')
+                    set_tab_being_dragged()
+                    self.mark_tab_bar_dirty()  # re-render the tab bar in case it was drawn without the dragged tab
                 break
         else:
             set_tab_being_dragged()
@@ -1786,16 +1805,21 @@ class TabManager:  # {{{
 
         tab_id_at_x = self.tab_bar.tab_id_at(int(x))
         self.recent_tab_bar_mouse_events.add(button, modifiers, action, x, y, tab_id_at_x)
+        drag_started = get_tab_being_dragged()[1]
+        is_left_release = button == GLFW_MOUSE_BUTTON_LEFT and action == GLFW_RELEASE
         if tab_id_at_x < 0:  # synthetic tab (e.g. "+" new-tab button)
+            if is_left_release and not drag_started:
+                set_tab_being_dragged()  # clear potential drag from a press on a tab
             if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 1:
                 self.new_tab()
                 self.recent_tab_bar_mouse_events.clear()
             return
-        drag_started = get_tab_being_dragged()[1]
         if drag_started:
             return
         tab = self.tab_for_id(tab_id_at_x)
         if tab is None:
+            if is_left_release:
+                set_tab_being_dragged()  # clear potential drag from a press on a tab
             if self.recent_tab_bar_mouse_events.click_count(GLFW_MOUSE_BUTTON_LEFT) == 2:
                 self.new_tab()
                 self.recent_tab_bar_mouse_events.clear()

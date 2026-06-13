@@ -181,7 +181,7 @@ update_scrollbar_hover_state(Window *w, bool hovering) {
 }
 
 static void
-set_currently_hovered_window(id_type window_id, int modifiers) {
+set_currently_hovered_window(id_type window_id, int modifiers, bool focus_follows) {
     if (global_state.mouse_hover_in_window != window_id) {
         Window *left_window = window_for_id(global_state.mouse_hover_in_window);
         global_state.mouse_hover_in_window = window_id;
@@ -196,7 +196,7 @@ set_currently_hovered_window(id_type window_id, int modifiers) {
                 debug("Sent mouse leave event to window: %llu currently hovering: %llu\n", left_window->id, window_id);
             }
         }
-        if (window_id && OPT(focus_follows_mouse).on_cross && global_state.callback_os_window && global_state.callback_os_window->num_tabs) {
+        if (focus_follows && window_id && OPT(focus_follows_mouse).on_cross && global_state.callback_os_window && global_state.callback_os_window->num_tabs) {
             Tab *t = global_state.callback_os_window->tabs + global_state.callback_os_window->active_tab;
             for (unsigned i = 0; i < t->num_windows; i++) {
                 if (t->windows[i].id == window_id) {
@@ -645,6 +645,11 @@ handle_scrollbar_mouse(Window *w, int button, MouseAction action, int modifiers 
                 start_scrollbar_drag(w, mouse_y);
                 global_state.active_drag_in_window = w->id;
                 global_state.active_drag_button = button;
+            } else if (hit_type == SCROLLBAR_HIT_TRACK && OPT(scrollbar_jump_on_click)) {
+                handle_scrollbar_track_click(w, mouse_y);
+                start_scrollbar_drag(w, mouse_y);
+                global_state.active_drag_in_window = w->id;
+                global_state.active_drag_button = button;
             }
         }
     }
@@ -929,7 +934,7 @@ currently_pressed_button(void) {
 HANDLER(handle_event) {
     modifiers &= ~GLFW_LOCK_MASK;
     set_mouse_cursor_for_screen(w->render_data.screen);
-    set_currently_hovered_window(w->id, modifiers);
+    set_currently_hovered_window(w->id, modifiers, true);
     if (button == -1) {
         button = currently_pressed_button();
         handle_move_event(w, button, modifiers, window_idx);
@@ -950,8 +955,21 @@ handle_window_title_bar_mouse(Window *w, int button, int modifiers, int action) 
 
 static void
 handle_tab_bar_mouse(int button, int modifiers, int action) {
-    set_currently_hovered_window(0, modifiers);
+    set_currently_hovered_window(0, modifiers, false);
     OSWindow *w = global_state.callback_os_window;
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE && global_state.tab_being_dragged.id
+            && global_state.tab_being_dragged.drag_started && !global_state.drag_source.is_active) {
+        // Once a system drag and drop is active the release is consumed by it
+        // and never delivered to us, so getting one here means the drag never
+        // became a system DND: either glfwStartDrag failed/was not called yet
+        // or the compositor silently ignored it (Wayland with a stale serial).
+        // Clear the drag state so mouse handling is not redirected to the tab
+        // bar forever, and swallow the release as it ended an aborted drag.
+        zero_at_ptr(&global_state.tab_being_dragged);
+        // re-render the tab bar in case it was drawn without the dragged tab
+        if (w) w->tab_bar_data_updated = false;
+        return;
+    }
     // dont report motion events, as they are expensive and useless
     if (w && (button > -1 || global_state.tab_being_dragged.id)) {
         call_boss(handle_tab_bar_mouse, "Kddiii", w->id, w->mouse_x, w->mouse_y, button, modifiers, action);
@@ -1143,11 +1161,11 @@ update_mouse_pointer_shape(void) {
 void
 leave_event(int modifiers) {
     if (global_state.redirect_mouse_handling || global_state.active_drag_in_window || global_state.tracked_drag_in_window) return;
-    set_currently_hovered_window(0, modifiers);
+    set_currently_hovered_window(0, modifiers, false);
 }
 
 void
-enter_event(int modifiers) {
+enter_event(int modifiers, bool cursor_moved) {
 #ifdef __APPLE__
     // On cocoa there is no way to configure the window manager to
     // focus windows on mouse enter, so we do it ourselves
@@ -1165,7 +1183,7 @@ enter_event(int modifiers) {
     if (global_state.redirect_mouse_handling || global_state.active_drag_in_window || global_state.tracked_drag_in_window) return;
     MouseRegion r = mouse_region(false, false);
     Window *w = r.window;
-    set_currently_hovered_window(w ? w->id : 0, modifiers);
+    set_currently_hovered_window(w ? w->id : 0, modifiers, cursor_moved);
     if (!w || r.in_tab_bar || r.in_title_bar) return;
 
     if (handle_scrollbar_mouse(w, -1, MOVE, modifiers)) return;
@@ -1354,7 +1372,7 @@ mouse_event(const int button, int modifiers, int action) {
     }
     MouseRegion r = mouse_region(true, true);
     w = r.window; window_idx = r.window_idx;
-    set_currently_hovered_window(w && !r.window_border && !r.in_title_bar ? w->id : 0, modifiers);
+    set_currently_hovered_window(w && !r.window_border && !r.in_title_bar ? w->id : 0, modifiers, true);
 
     if (r.in_tab_bar || global_state.tab_being_dragged.id) {
         mouse_cursor_shape = POINTER_POINTER;
