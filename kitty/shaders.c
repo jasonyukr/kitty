@@ -1606,6 +1606,54 @@ draw_centered_alpha_mask(size_t screen_width, size_t screen_height, size_t width
 }
 
 static void
+draw_os_window_outer_border(const OSWindow *osw) {
+    // Draw inside-rect border using scissor + clear, to avoid any shader/viewport pitfalls.
+    const color_type border = 0x0b0a09;
+    const unsigned W = osw->viewport_width, H = osw->viewport_height;
+    if (W == 0 || H == 0) return;
+
+    // Thickness: 1px for bottom, 2px for left/right to survive fractional scales
+    GLsizei lw = (GLsizei)MIN(2u, W);
+
+    // Save blend state and disable blending
+    GLboolean blend_was_enabled = glIsEnabled(GL_BLEND);
+    if (blend_was_enabled) glDisable(GL_BLEND);
+
+    // Compute pre-multiplied sRGB clear color (alpha = 1)
+    float r = ((border >> 16) & 0xFF) / 255.f;
+    float g = ((border >> 8) & 0xFF) / 255.f;
+    float b = (border & 0xFF) / 255.f;
+    glClearColor(r, g, b, 1.0f);
+
+    // Draw helper via scissor rectangles (top-left origin)
+    Viewport vp;
+    // Left
+    vp.left = 0; vp.top = 0; vp.width = lw; vp.height = (GLsizei)H;
+    enable_scissor_using_top_left_origin(vp, (unsigned)H);
+    glClear(GL_COLOR_BUFFER_BIT);
+    disable_scissor();
+
+    // Right
+    if (W > 1) {
+        vp.left = (GLint)(W - lw); vp.top = 0; vp.width = lw; vp.height = (GLsizei)H;
+        enable_scissor_using_top_left_origin(vp, (unsigned)H);
+        glClear(GL_COLOR_BUFFER_BIT);
+        disable_scissor();
+    }
+
+
+    // Bottom (1px)
+    if (H > 1) {
+        vp.left = 0; vp.top = (GLint)(H - 1); vp.width = (GLsizei)W; vp.height = 1;
+        enable_scissor_using_top_left_origin(vp, (unsigned)H);
+        glClear(GL_COLOR_BUFFER_BIT);
+        disable_scissor();
+    }
+
+    if (blend_was_enabled) glEnable(GL_BLEND);
+}
+
+static void
 draw_resizing_text(OSWindow *w) {
     if (monotonic() - w->created_at > ms_to_monotonic_t(1000) && w->live_resize.num_of_resize_events > 1) {
         char text[32] = {0};
@@ -1689,6 +1737,8 @@ stop_os_window_rendering(OSWindow *os_window, Tab *tab, Window *active_window) {
             draw_resizing_text(os_window);
         }
     }
+    // Draw a 1px inside border around the OS window
+    draw_os_window_outer_border(os_window);
 }
 
 void

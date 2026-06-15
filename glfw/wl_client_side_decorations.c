@@ -209,6 +209,7 @@ scale(unsigned thickness, float factor) {
 }
 
 static void
+__attribute__((unused))
 render_minimize(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12;
@@ -219,6 +220,7 @@ render_minimize(uint8_t *out, unsigned width, unsigned height) {
 }
 
 static void
+__attribute__((unused))
 render_maximize(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12, half_thickness = thickness / 2;
@@ -233,6 +235,7 @@ render_maximize(uint8_t *out, unsigned width, unsigned height) {
 }
 
 static void
+__attribute__((unused))
 render_restore(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
     unsigned thickness = height / 12, half_thickness = thickness / 2;
@@ -278,14 +281,19 @@ render_line(uint8_t *buf, unsigned width, unsigned height, unsigned thickness, i
 static void
 render_close(uint8_t *out, unsigned width, unsigned height) {
     memset(out, 0, (size_t)width * height);
-    unsigned thickness = height / 12;
-    unsigned baseline = height - thickness * 2;
+    unsigned icon_width = (unsigned)(width * 0.6);
+    unsigned icon_height = (unsigned)(height * 0.6);
+    unsigned x_offset = (width - icon_width) / 2;
+    unsigned y_offset = (height - icon_height) / 2;
+
+    unsigned thickness = icon_height / 12;
+    unsigned baseline = icon_height - thickness * 2;
     unsigned side_margin = scale(thickness, 3.3f);
-    int top = baseline - (width - 2 * side_margin);
+    int top = baseline - (icon_width - 2 * side_margin);
     if (top <= 0) return;
     unsigned line_thickness = scale(thickness, 1.5f);
-    render_line(out, width, height, line_thickness, side_margin, top, width - side_margin, baseline);
-    render_line(out, width, height, line_thickness, side_margin, baseline, width - side_margin, top);
+    render_line(out + y_offset * width + x_offset, width, icon_height, line_thickness, side_margin, top, icon_width - side_margin, baseline);
+    render_line(out + y_offset * width + x_offset, width, icon_height, line_thickness, side_margin, baseline, icon_width - side_margin, top);
 }
 
 static uint32_t
@@ -345,11 +353,20 @@ render_title_bar(_GLFWwindow *window, bool to_front_buffer) {
     } else if (appearance == GLFW_COLOR_SCHEME_DARK) { bg_color = dark_bg; fg_color = dark_fg; hover_bg = hover_dark_bg; is_dark = true; }
     uint8_t *output = to_front_buffer ? decs.titlebar.buffer.data.front : decs.titlebar.buffer.data.back;
 
+    (void)is_maximized;
+    (void)hover_bg;
+
+    // Hack the colors
+    fg_color = _glfwPlatformWindowFocused(window) ? 0xffc5c5c5 : 0xff606060;
+    bg_color = 0xff2a2a2a;
+
     // render text part
     size_t button_size = decs.titlebar.buffer.height;
     unsigned num_buttons = 1;
+/*
     if (window->wl.wm_capabilities.maximize) num_buttons++;
     if (window->wl.wm_capabilities.minimize) num_buttons++;
+*/
     if (window->wl.title && window->wl.title[0] && _glfw.callbacks.draw_text) {
         if (_glfw.callbacks.draw_text((GLFWwindow*)window, window->wl.title, fg_color, bg_color, output, decs.titlebar.buffer.width, decs.titlebar.buffer.height, 0, 0, num_buttons * button_size, false)) goto render_buttons;
     }
@@ -366,12 +383,40 @@ render_buttons:
 #define drawb(which, antialias, func, hover_bg) { \
     render_button(func, antialias, (uint32_t*)output, alpha_mask, button_size, decs.titlebar.buffer.width, button_size, left, decs.which.hovered ? hover_bg : bg_color, fg_color); decs.which.left = left; decs.which.width = button_size; left += button_size; }
 
+/*
     if (window->wl.wm_capabilities.minimize) drawb(minimize, false, render_minimize, hover_bg);
     if (window->wl.wm_capabilities.maximize) {
         if (is_maximized) { drawb(maximize, false, render_restore, hover_bg); } else { drawb(maximize, false, render_maximize, hover_bg); }
     }
+*/
     drawb(close, true, render_close, is_dark ? 0xff880000: 0xffc80000);
     free(alpha_mask);
+
+    // Overlay a 2px inside border on the titlebar surface (top/left/right)
+    {
+        const uint32_t border = 0xff0b0a09;
+        const size_t w = (size_t)decs.titlebar.buffer.width;
+        const size_t h = (size_t)decs.titlebar.buffer.height;
+        const size_t stride = (size_t)decs.titlebar.buffer.stride;
+        if (w > 0 && h > 0) {
+            // Top horizontal band (y = 0..min(1,h-1))
+            uint32_t *row0 = (uint32_t*)output;
+            for (size_t x = 0; x < w; x++) row0[x] = border;
+            if (h > 1) {
+                uint32_t *row1 = (uint32_t*)(output + 1 * stride);
+                for (size_t x = 0; x < w; x++) row1[x] = border;
+            }
+
+            // Left and right vertical bands across titlebar height
+            for (size_t yy = 0; yy < h; yy++) {
+                uint32_t *r = (uint32_t*)(output + yy * stride);
+                r[0] = border;
+                if (w > 1) r[1] = border;
+                r[w - 1] = border;
+                if (w > 1) r[w - 2] = border;
+            }
+        }
+    }
 #undef drawb
 }
 
@@ -466,6 +511,44 @@ render_shadows(_GLFWwindow *window) {
 }
 #undef st
 
+static void
+render_borders(_GLFWwindow *window) {
+    // Draw a 1 device-pixel border using only surfaces that are inside the
+    // visible window rectangle to avoid any pixels outside the window rect.
+    // Color: 0xFF666666 (opaque ARGB)
+    const uint32_t color = 0xff0b0a09;
+
+    // Titlebar: draw top, left and right edges inside the visible region
+    _GLFWWaylandBufferPair *tb = &decs.titlebar.buffer;
+    if ((size_t)tb->width > 0 && (size_t)tb->height > 0) {
+        // Top horizontal line at y = 0
+        size_t y = 0;
+        uint32_t *tf = (uint32_t*)(tb->data.front + y * (size_t)tb->stride);
+        uint32_t *tbk = (uint32_t*)(tb->data.back  + y * (size_t)tb->stride);
+        for (size_t x = 0; x < (size_t)tb->width; x++) { tf[x] = color; tbk[x] = color; }
+
+        // Left and right vertical lines across the titlebar height
+        size_t xr = (size_t)tb->width - 1;
+        for (size_t yy = 0; yy < (size_t)tb->height; yy++) {
+            uint32_t *rowf = (uint32_t*)(tb->data.front + yy * (size_t)tb->stride);
+            uint32_t *rowb = (uint32_t*)(tb->data.back  + yy * (size_t)tb->stride);
+            rowf[0] = color; rowb[0] = color;
+            rowf[xr] = color; rowb[xr] = color;
+        }
+    }
+
+    // Bottom edge: draw on the first row of the bottom shadow surface, which
+    // aligns with the bottom of the content area. This keeps the bottom line
+    // visually at the window rectangle while avoiding any overdraw outside.
+    _GLFWWaylandBufferPair *b = &decs.shadow_bottom.buffer;
+    if ((size_t)b->width > 0 && (size_t)b->height > 0) {
+        size_t y = 0;
+        uint32_t *rf = (uint32_t*)(b->data.front + y * (size_t)b->stride);
+        uint32_t *rb = (uint32_t*)(b->data.back  + y * (size_t)b->stride);
+        for (size_t x = 0; x < (size_t)b->width; x++) { rf[x] = color; rb[x] = color; }
+    }
+}
+
 static bool
 create_shm_buffers(_GLFWwindow* window) {
     decs.mapping.size = 0;
@@ -505,6 +588,7 @@ create_shm_buffers(_GLFWwindow* window) {
     wl_shm_pool_destroy(pool);
     if (has_titlebar) render_title_bar(window, true);
     render_shadows(window);
+    render_borders(window);
     debug("Created decoration buffers at scale: %f\n", decs.for_window_state.fscale);
     return true;
 }

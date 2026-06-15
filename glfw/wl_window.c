@@ -1507,7 +1507,10 @@ int _glfwPlatformCreateWindow(
     // looping till window fully created attaches a single pixel buffer to the window,
     // this cannot be done once a OpenGL context is created for the window. So first loop
     // and only then create the OpenGL context.
-    if (window->wl.visible) loop_till_window_fully_created(window);
+    if (window->wl.visible) {
+        loop_till_window_fully_created(window);
+        if (csd_change_title(window)) commit_window_surface_if_safe(window);
+    }
     debug("Creating OpenGL context and attaching it to window\n");
     if (ctxconfig->client != GLFW_NO_API) attach_opengl_context_to_window(window, ctxconfig, fbconfig);
     return true;
