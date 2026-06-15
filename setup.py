@@ -206,6 +206,7 @@ class Options:
     systemd_library: Optional[str] = os.getenv('KITTY_SYSTEMD_LIBRARY')
     fontconfig_library: Optional[str] = os.getenv('KITTY_FONTCONFIG_LIBRARY')
     building_arch: str = ''
+    skip_docs: bool = False
 
     # Extras
     compilation_database: CompilationDatabase = CompilationDatabase()
@@ -1504,8 +1505,8 @@ def create_linux_bundle_gunk(ddir: str, args: Options) -> None:
     base = Path(ddir)
     in_src_launcher = base / (f'{libdir_name}/kitty/kitty/launcher/kitty')
     launcher = base / 'bin/kitty'
-    skip_docs = False
-    if not os.path.exists('docs/_build/html'):
+    skip_docs = args.skip_docs
+    if not os.path.exists('docs/_build/html') and not skip_docs:
         kitten_exe = os.path.join(os.path.dirname(str(launcher)), 'kitten')
         if os.path.exists(kitten_exe):
             os.environ['KITTEN_EXE_FOR_DOCS'] = kitten_exe
@@ -2177,6 +2178,12 @@ def option_parser() -> argparse.ArgumentParser:  # {{{
         '--build-dSYM', dest='build_dsym',
         default=Options.build_dsym, action='store_true',
         help='Build the dSYM bundle on macOS, ignored on other platforms'
+    )
+    p.add_argument(
+        '--skip-docs',
+        default=False,
+        action='store_true',
+        help='Do not build or include documentation in the package.'
     )
     return p
 # }}}

@@ -404,6 +404,44 @@ func build(args []string) {
 	fmt.Println("Build successful. Run kitty as: kitty/launcher/kitty")
 }
 
+func linux_dist(args []string) {
+	chdir_to_base()
+	if _, err := os.Stat(folder); err != nil {
+		dependencies(nil)
+	}
+	root := root_dir()
+	os.Setenv("DEVELOP_ROOT", root)
+	if runtime.GOOS == "linux" {
+		// setup.py uses a different rpath for linux-package than for develop, even
+		// though the directory layout is the same. We override it here.
+		cwd, err := os.Getwd()
+		if err != nil {
+			exit(err)
+		}
+		rel_root, err := filepath.Rel(cwd, root)
+		if err != nil {
+			exit(err)
+		}
+		ldflags := fmt.Sprintf("-Wl,--disable-new-dtags -Wl,-rpath,$ORIGIN/../../%s/lib", rel_root)
+		os.Setenv("LDFLAGS", ldflags)
+		cppflags := fmt.Sprintf("-DSET_PYTHON_HOME='\"../../../%s\"'", rel_root)
+		os.Setenv("CPPFLAGS", cppflags)
+	}
+	prepend("PKG_CONFIG_PATH", filepath.Join(root, "lib", "pkgconfig"))
+	if runtime.GOOS == "darwin" {
+		os.Setenv("PKGCONFIG_EXE", filepath.Join(root, "bin", "pkg-config"))
+	}
+	python := setup_to_run_python()
+	args = append([]string{"setup.py", "linux-package", "--skip-docs"}, args...)
+	cmd := exec.Command(python, args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "The following build command failed:", python, strings.Join(args, " "))
+		exit(err)
+	}
+	fmt.Println("Linux package created in ./linux-package")
+}
+
 func docs(args []string) {
 	setup_to_run_python()
 	nf := flag.NewFlagSet("deps", flag.ExitOnError)
@@ -442,6 +480,8 @@ func main() {
 		dependencies(os.Args[2:])
 	case "build":
 		build(os.Args[2:])
+	case "linux-dist":
+		linux_dist(os.Args[2:])
 	case "docs":
 		docs(os.Args[2:])
 	case "-h", "--help":
