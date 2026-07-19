@@ -952,7 +952,7 @@ def add_builtin_fonts(args: Options) -> None:
             lines = subprocess.check_output([
                 'fc-list', '--format', '%{file}\n%{postscriptname}', f':postscriptname={psname}']).decode().splitlines()
             if len(lines) != 2:
-                raise SystemExit(f'fc-list returned unexpected output: {lines}')
+                raise SystemExit(f'fc-list returned unexpected output: {lines} when searching for the Symbols NERD font')
             if lines[1] != psname:
                 raise SystemExit(f'The font {human_name!r} was not found on your system, please install it')
             font_file = lines[0]
@@ -1370,8 +1370,11 @@ def read_bool_options(path: str = 'kitty/cli.py') -> Tuple[str, ...]:
 
 
 def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 'source') -> str:
-    werror = '' if args.ignore_compiler_warnings else '-pedantic-errors -Werror'
-    cflags = f'-Wall {werror} -fpie {c_std}'.strip().split()
+    cflags = ['-Wall']
+    if not args.ignore_compiler_warnings:
+        cflags.extend(('-pedantic-errors', '-Werror'))
+    if c_std:
+        cflags.append(c_std)
     cppflags = [define(f'WRAPPED_KITTENS=" {wrapped_kittens()} "')]
     ldflags = shlex.split(os.environ.get('LDFLAGS', ''))
     xxhash = xxhash_flags()
@@ -1763,6 +1766,9 @@ def macos_info_plist(for_quake: str = '') -> bytes:
         NSBluetoothAlwaysUsageDescription=access('Bluetooth.'),
         # Speech
         NSSpeechRecognitionUsageDescription=access('speech recognition.'),
+        # One time code autofill popups
+        # see https://github.com/kovidgoyal/kitty/pull/10250
+        NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac=True,
     )
     if for_quake:
         # exclude from dock and menubar
@@ -2330,6 +2336,7 @@ def do_build(args: Options) -> None:
         elif args.action == 'export-ci-bundles':
             cmd = [sys.executable, '../bypy', 'export', 'download.calibre-ebook.com:/srv/download/ci/kitty']
             subprocess.check_call(cmd + ['linux'])
+            subprocess.check_call(cmd + ['linux', '--arch=arm64'])
             subprocess.check_call(cmd + ['macos'])
         elif args.action == 'build-static-binaries':
             build_static_binaries(args, launcher_dir)

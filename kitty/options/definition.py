@@ -406,13 +406,17 @@ Adjust these values to control how quickly the cursor trail fades away.
 ''')
 
 opt('cursor_trail_start_threshold', '2',
-    option_type='positive_int', ctype='int',
+    option_type='cursor_trail_start_threshold',
+    ctype='!cursor_trail_start_threshold',
     long_text='''
-Set the distance threshold for starting the cursor trail. This option accepts a
-positive integer value that represents the minimum number of cells the
-cursor must move before the trail is started. When the cursor moves less than
-this threshold, the trail is skipped, reducing unnecessary cursor trail
-animation.
+Set the distance threshold for starting the cursor trail. This option accepts
+one or two positive integer values. When a single value is specified, it sets
+the threshold for both horizontal (x) and vertical (y) movement. When two
+values are specified, the first sets the x (horizontal) threshold and the
+second sets the y (vertical) threshold. The values represent the minimum
+number of cells the cursor must move in each dimension before the trail is
+started. When the cursor moves less than the threshold in both dimensions,
+the trail is skipped, reducing unnecessary cursor trail animation.
 ''')
 
 opt('cursor_trail_color', 'none',
@@ -1616,18 +1620,22 @@ agr('tabbar', 'Tab bar')
 
 opt('tab_bar_edge', 'bottom',
     option_type='tab_bar_edge', ctype='int',
-    long_text='The edge to show the tab bar on, :code:`top` or :code:`bottom`.'
+    long_text='The edge to show the tab bar on, :code:`top`, :code:`bottom`, :code:`left` or :code:`right`.'
     )
 
 opt('tab_bar_margin_width', '0.0',
     option_type='positive_float',
-    long_text='The margin to the left and right of the tab bar (in pts).'
+    long_text='''
+The margin perpendicular to the tab bar edge (in pts). For tab bars on the
+top or bottom this is the margin to the left and right. For tab bars on the
+left or right this is the margin above and below.
+'''
     )
 
 opt('tab_bar_margin_height', '0.0 0.0',
     option_type='tab_bar_margin_height', ctype='!tab_bar_margin_height',
     long_text='''
-The margin above and below the tab bar (in pts). The first number is the margin
+The margin along the tab bar edge (in pts). The first number is the margin
 between the edge of the OS Window and the tab bar. The second number is the
 margin between the tab bar and the contents of the current tab.
 '''
@@ -1675,11 +1683,12 @@ tab navigation actions such as :ac:`goto_tab`, :ac:`next_tab`, :ac:`previous_tab
 are automatically restricted to work only on matching tabs.
 ''')
 
-opt('tab_bar_align', 'left',
-    choices=('left', 'center', 'right'),
+opt('tab_bar_align', 'start',
+    choices=('start', 'center', 'end', 'left', 'right'),
     long_text='''
-The horizontal alignment of the tab bar, can be one of: :code:`left`,
-:code:`center`, :code:`right`.
+The alignment of the tab bar, can be one of: :code:`start`, :code:`center`,
+:code:`end`, :code:`left`, :code:`right`. The values :code:`left` and
+:code:`right` are aliases for :code:`start` and :code:`end` respectively.
 '''
     )
 
@@ -1746,10 +1755,12 @@ this is rendered.
     )
 
 opt('tab_title_max_length', '0',
-    option_type='positive_int',
+    option_type='positive_int', ctype='int',
     long_text='''
 The maximum number of cells that can be used to render the text in a tab.
-A value of zero means that no limit is applied.
+A value of zero means that no limit is applied. For vertical tab bars, kitty
+uses a default sidebar width sized for about twenty title cells when this is
+left unset.
 '''
     )
 
@@ -2723,6 +2734,25 @@ opt('macos_fullscreen_ignore_safe_area_insets', 'no',
 When using :opt:`macos_traditional_fullscreen`, ignore the safe area insets on
 displays such as MacBook screens with a notch. This allows kitty to use the
 full display frame instead of leaving space for the notch area.
+'''
+    )
+
+opt('macos_use_physical_screen_frame', 'no', option_type='to_bool', ctype='bool', long_text='''
+Use the physical screen frame instead of the visible frame when placing macOS
+desktop panels such as those created by :code:`kitty +kitten panel`. This allows
+panels to draw in areas normally reserved for the native menu bar or Dock.
+See also :opt:`macos_ns_window_layer`.
+'''
+    )
+
+opt('macos_ns_window_layer', 'unset', option_type='str', ctype='!macos_ns_window_layer', long_text='''
+Set the macOS NSWindow level for newly created panel OS windows such
+as with the :doc:`panel kitten </kittens/panel>`. The default value
+:code:`unset` leaves normal level handling unchanged. Values can
+be integer window levels, AppKit/CoreGraphics window-level constant names, or
+simple arithmetic expressions combining them with integers. For example:
+:code:`NSFloatingWindowLevel`, :code:`kCGBackstopMenuLevel`,
+:code:`NSPopUpMenuWindowLevel - 1`. See also :macos_use_physical_screen_frame`.
 '''
     )
 

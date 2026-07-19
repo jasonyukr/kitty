@@ -691,29 +691,76 @@ pyset_borders_rects(PyObject *self UNUSED, PyObject *args) {
 }
 
 
+static unsigned
+vertical_tab_bar_cols(const OSWindow *os_window, long margin_outer, long margin_inner) {
+    unsigned cell_width = MAX(1u, os_window->fonts_data->fcm.cell_width);
+    long available_width = (long)os_window->viewport_width - margin_outer - margin_inner;
+    if (available_width <= 0) return 0;
+    unsigned available_cols = MAX(1u, (unsigned)available_width / cell_width);
+    unsigned title_cols = OPT(tab_title_max_length) > 0 ? (unsigned)OPT(tab_title_max_length) : 20u;
+    unsigned desired_cols = title_cols + 8u;
+    unsigned soft_max = available_cols / 3u;
+    if (soft_max < 6u) soft_max = available_cols;
+    return MAX(1u, MIN(available_cols, MIN(desired_cols, MAX(1u, soft_max))));
+}
+
 void
 os_window_regions(const OSWindow *os_window, Region *central, Region *tab_bar) {
     if (!OPT(tab_bar_hidden) && os_window->num_tabs && !os_window->has_too_few_tabs) {
         long margin_outer = pt_to_px_for_os_window(OPT(tab_bar_margin_height.outer), os_window);
         long margin_inner = pt_to_px_for_os_window(OPT(tab_bar_margin_height.inner), os_window);
         central->left = 0; central->right = os_window->viewport_width;
-        unsigned tab_bar_height = os_window->fonts_data->fcm.cell_height + margin_inner + margin_outer;
+        central->top = 0; central->bottom = os_window->viewport_height;
         switch(OPT(tab_bar_edge)) {
-            case TOP_EDGE:
+            case TOP_EDGE: {
+                unsigned tab_bar_height = os_window->fonts_data->fcm.cell_height + margin_inner + margin_outer;
                 central->top = tab_bar_height;
                 central->bottom = os_window->viewport_height;
                 central->top = MIN(central->top, central->bottom);
                 tab_bar->top = margin_outer;
+                tab_bar->left = central->left; tab_bar->right = central->right;
+                tab_bar->bottom = tab_bar->top + os_window->fonts_data->fcm.cell_height;
                 break;
-            default:
+            }
+            case LEFT_EDGE: {
+                unsigned left_cols = vertical_tab_bar_cols(os_window, margin_outer, margin_inner);
+                if (!left_cols) {
+                    zero_at_ptr(tab_bar);
+                    return;
+                }
+                unsigned left_width = left_cols * os_window->fonts_data->fcm.cell_width;
+                central->left = MIN((long)(left_width + margin_inner + margin_outer), (long)central->right);
+                tab_bar->left = margin_outer;
+                tab_bar->right = tab_bar->left + left_width;
+                tab_bar->top = central->top;
+                tab_bar->bottom = central->bottom;
+                break;
+            }
+            case RIGHT_EDGE: {
+                unsigned right_cols = vertical_tab_bar_cols(os_window, margin_outer, margin_inner);
+                if (!right_cols) {
+                    zero_at_ptr(tab_bar);
+                    return;
+                }
+                unsigned right_width = right_cols * os_window->fonts_data->fcm.cell_width;
+                central->right = MAX(0, (long)os_window->viewport_width - (long)(right_width + margin_inner + margin_outer));
+                tab_bar->left = central->right + margin_inner;
+                tab_bar->right = tab_bar->left + right_width;
+                tab_bar->top = central->top;
+                tab_bar->bottom = central->bottom;
+                break;
+            }
+            default: {
+                unsigned tab_bar_height = os_window->fonts_data->fcm.cell_height + margin_inner + margin_outer;
                 central->top = 0;
                 long bottom = os_window->viewport_height - tab_bar_height;
                 central->bottom = MAX(0, bottom);
                 tab_bar->top = central->bottom + margin_inner;
+                tab_bar->left = central->left; tab_bar->right = central->right;
+                tab_bar->bottom = tab_bar->top + os_window->fonts_data->fcm.cell_height;
                 break;
+            }
         }
-        tab_bar->left = central->left; tab_bar->right = central->right;
-        tab_bar->bottom = tab_bar->top + os_window->fonts_data->fcm.cell_height;
     } else {
         zero_at_ptr(tab_bar);
         central->left = 0; central->top = 0; central->right = os_window->viewport_width;
@@ -1357,13 +1404,41 @@ PYWRAP1(patch_global_colors) {
 
 PYWRAP1(update_tab_bar_edge_colors) {
     id_type os_window_id;
-    PA("K", &os_window_id);
+    int is_vertical = 0;
+    PA("K|p", &os_window_id, &is_vertical);
     WITH_OS_WINDOW(os_window_id)
-        if (os_window->tab_bar_render_data.screen) {
-            if (get_line_edge_colors(os_window->tab_bar_render_data.screen, &os_window->tab_bar_edge_color.left, &os_window->tab_bar_edge_color.right)) { Py_RETURN_TRUE; }
+        Screen *screen = os_window->tab_bar_render_data.screen;
+        if (screen) {
+            bool left_is_default = true, right_is_default = true;
+            bool ok;
+            if (!is_vertical) {
+                ok = get_line_edge_colors_at_row(
+                    screen, screen->cursor->y,
+                    &os_window->tab_bar_edge_color.left,
+                    &os_window->tab_bar_edge_color.right,
+                    &left_is_default, &right_is_default);
+            } else {
+                color_type top_color = 0, bottom_color = 0;
+                bool top_is_default = true, bottom_is_default = true;
+                // For vertical bars we only need the left-edge color of each row (the
+                // right-edge output is unused since tabs span the full row width).
+                ok = get_line_edge_colors_at_row(screen, 0, &top_color, NULL, &top_is_default, NULL) &&
+                     get_line_edge_colors_at_row(screen, screen->lines - 1, &bottom_color, NULL, &bottom_is_default, NULL);
+                if (ok) {
+                    os_window->tab_bar_edge_color.left = top_color;
+                    os_window->tab_bar_edge_color.right = bottom_color;
+                    left_is_default = top_is_default;
+                    right_is_default = bottom_is_default;
+                }
+            }
+            if (ok) {
+                return Py_BuildValue("OO",
+                    left_is_default ? Py_True : Py_False,
+                    right_is_default ? Py_True : Py_False);
+            }
         }
     END_WITH_OS_WINDOW
-    Py_RETURN_FALSE;
+    Py_RETURN_NONE;
 }
 
 static PyObject*

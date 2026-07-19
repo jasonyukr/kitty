@@ -182,6 +182,9 @@ set_layer_shell_config_for(OSWindow *w, GLFWLayerShellConfig *lsc) {
         lsc->related.background_opacity = effective_os_window_alpha(w);
         lsc->related.background_blur = OPT(background_blur);
         lsc->related.color_space = OPT(macos_colorspace);
+        lsc->related.use_physical_screen_frame = OPT(macos_use_physical_screen_frame);
+        if (OPT(macos_ns_window_layer)) snprintf(lsc->related.ns_window_layer, sizeof(lsc->related.ns_window_layer), "%s", OPT(macos_ns_window_layer));
+        else lsc->related.ns_window_layer[0] = '\0';
         w->hide_on_focus_loss = lsc->hide_on_focus_loss;
     }
     return glfwSetLayerShellConfig(w->handle, lsc);
@@ -1850,8 +1853,21 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
             // this can happen if the window is moved by the OS to a different monitor when shown or with fractional scales on Wayland
             // it can also happen with layer shell windows if the callback is
             // called before the window is fully created
-            xdpi = n_xdpi; ydpi = n_ydpi;
+            xdpi = n_xdpi; ydpi = n_ydpi; xscale = n_xscale; yscale = n_yscale;
             fonts_data = load_fonts_data(OPT(font_size), xdpi, ydpi);
+            // Re-compute the window size with the updated scale/font metrics. This matters when
+            // the initial size is specified in cells: the first window on Wayland is created with
+            // scale=1 because fractional scale is only sent by the compositor after the surface
+            // exists, so the cell dimensions used for the initial size calculation were wrong.
+            PyObject *new_size = PyObject_CallFunction(get_window_size, "IIddff", fonts_data->fcm.cell_width, fonts_data->fcm.cell_height, fonts_data->logical_dpi_x, fonts_data->logical_dpi_y, xscale, yscale);
+            if (new_size != NULL) {
+                int new_width = PyLong_AsLong(PyTuple_GET_ITEM(new_size, 0)), new_height = PyLong_AsLong(PyTuple_GET_ITEM(new_size, 1));
+                Py_DECREF(new_size);
+                if (!PyErr_Occurred() && (new_width != width || new_height != height)) {
+                    glfwSetWindowSize(glfw_window, new_width, new_height);
+                    width = new_width; height = new_height;
+                } else PyErr_Clear();
+            } else PyErr_Clear();
         }
     }
     if (is_first_window) {
@@ -1930,6 +1946,9 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
         if (global_state.is_apple) set_layer_shell_config_for(w, lsc);
     } else apply_window_chrome_state(
             w->handle, w->last_window_chrome, width, height, global_state.is_apple ? OPT(hide_window_decorations) != 0 : false);
+#ifdef __APPLE__
+    if (!w->is_layer_shell) glfwCocoaSetWindowLevel(w->handle, OPT(macos_ns_window_layer));
+#endif
     // Update window state
     // We do not call glfwWindowHint to set GLFW_MAXIMIZED before the window is created.
     // That would cause the window to be set to maximize immediately after creation and use the wrong initial size when restored.

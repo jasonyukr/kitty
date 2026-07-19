@@ -462,7 +462,8 @@ invocations will instead create a new top-level window in the existing
 :italic:`{appname}` instance. This allows :italic:`{appname}` to share a single
 sprite cache on the GPU and also reduces startup time. You can also have
 separate groups of :italic:`{appname}` instances by using the :option:`{appname}
---instance-group` option.
+--instance-group` option. You can use the :option:`{appname} --start-as`=hidden
+flag to start a background kitty instance that acts as a server.
 
 
 --instance-group
@@ -644,7 +645,9 @@ default={layer}
 On a Wayland compositor that supports the wlr layer shell protocol, specifies the layer
 on which the panel should be drawn. This parameter is ignored and set to
 :code:`background` if :option:`--edge` is set to :code:`background`. On macOS, maps
-these to appropriate NSWindow *levels*.
+these to appropriate NSWindow *levels*. Note that on macOS, you can use :opt:`macos_ns_window_layer`
+for more fine control over the layer, using the :code:`--override` flag, for example:
+:code:`--override macos_ns_window_layer=NSPopUpMenuWindowLevel`.
 
 
 --config -c

@@ -32,7 +32,7 @@ choices_for_pointer_shape_when_grabbed = choices_for_default_pointer_shape
 choices_for_progress_bar = typing.Literal['left', 'right', 'top', 'bottom', 'hidden']
 choices_for_scrollbar = typing.Literal['scrolled', 'always', 'never', 'hovered', 'scrolled-and-hovered']
 choices_for_strip_trailing_spaces = typing.Literal['always', 'never', 'smart']
-choices_for_tab_bar_align = typing.Literal['left', 'center', 'right']
+choices_for_tab_bar_align = typing.Literal['start', 'center', 'end', 'left', 'right']
 choices_for_tab_bar_style = typing.Literal['fade', 'hidden', 'powerline', 'separator', 'slant', 'custom']
 choices_for_tab_powerline_style = typing.Literal['angled', 'round', 'slanted']
 choices_for_tab_switch_strategy = typing.Literal['last', 'left', 'previous', 'right']
@@ -41,7 +41,7 @@ choices_for_undercurl_style = typing.Literal['thin-sparse', 'thin-dense', 'thick
 choices_for_underline_hyperlinks = typing.Literal['hover', 'always', 'never']
 choices_for_window_logo_position = choices_for_placement_strategy
 choices_for_window_title_bar = typing.Literal['top', 'bottom']
-choices_for_window_title_bar_align = choices_for_tab_bar_align
+choices_for_window_title_bar_align = typing.Literal['left', 'center', 'right']
 
 option_names = (
     'action_alias',
@@ -391,12 +391,14 @@ option_names = (
     'macos_fullscreen_ignore_safe_area_insets',
     'macos_hide_from_tasks',
     'macos_menubar_title_max_length',
+    'macos_ns_window_layer',
     'macos_option_as_alt',
     'macos_quit_when_last_window_closed',
     'macos_show_window_title_in',
     'macos_thicken_font',
     'macos_titlebar_color',
     'macos_traditional_fullscreen',
+    'macos_use_physical_screen_frame',
     'macos_window_resizable',
     'map',
     'map_timeout',
@@ -565,7 +567,7 @@ class Options:
     cursor_trail: int = 0
     cursor_trail_color: kitty.fast_data_types.Color | None = None
     cursor_trail_decay: tuple[float, float] = (0.1, 0.4)
-    cursor_trail_start_threshold: int = 2
+    cursor_trail_start_threshold: tuple[int, int] = (2, 2)
     cursor_underline_thickness: float = 2.0
     default_pointer_shape: choices_for_default_pointer_shape = 'beam'
     detect_urls: bool = True
@@ -605,12 +607,14 @@ class Options:
     macos_fullscreen_ignore_safe_area_insets: bool = False
     macos_hide_from_tasks: bool = False
     macos_menubar_title_max_length: int = 0
+    macos_ns_window_layer: str = 'unset'
     macos_option_as_alt: int = 0
     macos_quit_when_last_window_closed: bool = False
     macos_show_window_title_in: choices_for_macos_show_window_title_in = 'all'
     macos_thicken_font: float = 0
     macos_titlebar_color: int = 0
     macos_traditional_fullscreen: bool = False
+    macos_use_physical_screen_frame: bool = False
     macos_window_resizable: bool = True
     map_timeout: float = 0
     mark1_background: Color = Color(152, 211, 203)
@@ -666,7 +670,7 @@ class Options:
     strip_trailing_spaces: choices_for_strip_trailing_spaces = 'never'
     sync_to_monitor: bool = True
     tab_activity_symbol: str = ''
-    tab_bar_align: choices_for_tab_bar_align = 'left'
+    tab_bar_align: choices_for_tab_bar_align = 'start'
     tab_bar_background: kitty.fast_data_types.Color | None = None
     tab_bar_edge: int = 8
     tab_bar_filter: str = ''
@@ -681,7 +685,7 @@ class Options:
     tab_separator: str = ' ┇'
     tab_switch_strategy: choices_for_tab_switch_strategy = 'previous'
     tab_title_max_length: int = 0
-    tab_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{fmt.fg.tab}{tab.last_focused_progress_percent}{title}'
+    tab_title_template: str = '{fmt.fg.red}{bell_symbol}{activity_symbol}{secure_input_symbol}{fmt.fg.tab}{tab.last_focused_progress_percent}{title}'
     term: str = 'xterm-kitty'
     terminfo_type: choices_for_terminfo_type = 'path'
     text_composition_strategy: str = 'platform'

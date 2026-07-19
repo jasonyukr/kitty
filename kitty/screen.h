@@ -217,6 +217,7 @@ typedef struct {
 #define render_lines_for_screen(screen) (screen->lines + pixel_scroll_enabled(screen))
 
 void screen_align(Screen*);
+void screen_garbage_collect_text_cache(Screen *screen);
 void screen_restore_cursor(Screen *);
 void screen_save_cursor(Screen *);
 void screen_restore_modes(Screen *);
@@ -241,6 +242,7 @@ void screen_scroll(Screen *self, unsigned int count);
 void screen_reverse_scroll(Screen *self, unsigned int count);
 void screen_reverse_scroll_and_fill_from_scrollback(Screen *self, unsigned int count);
 void screen_reset(Screen *self);
+void screen_soft_reset(Screen *self);
 void screen_set_tab_stop(Screen *self);
 void screen_tab(Screen *self);
 void screen_backtab(Screen *self, unsigned int);
@@ -332,6 +334,7 @@ bool screen_prompt_supports_click_events(const Screen *, bool *is_relative);
 bool screen_fake_move_cursor_to_position(Screen *, index_type x, index_type y);
 bool screen_send_signal_for_key(Screen *, char key);
 bool get_line_edge_colors(Screen *self, color_type *left, color_type *right);
+bool get_line_edge_colors_at_row(Screen *self, index_type y, color_type *left, color_type *right, bool *left_is_default, bool *right_is_default);
 bool parse_sgr(Screen *screen, const uint8_t *buf, unsigned int num, const char *report_name, bool is_deccara);
 bool screen_pause_rendering(Screen *self, bool pause, int for_in_ms);
 void screen_check_pause_rendering(Screen *self, monotonic_t now);

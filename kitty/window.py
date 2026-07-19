@@ -692,6 +692,9 @@ class Window:
     serialized_id: int = 0
     show_title_bar: bool = False  # must be set before calling set_geometry
     is_drag_target: bool = False  # highlight this window's title bar as a drop target
+    child_died: bool = False
+    child_exit_status: int = 0
+    child_exit_code: int = 0
 
     @classmethod
     @contextmanager
@@ -1496,7 +1499,7 @@ class Window:
         b |= b << 8
         self.screen.send_escape_code_to_child(ESC_OSC, f'{code};rgb:{r:04x}/{g:04x}/{b:04x}')
 
-    def on_reset(self) -> None:
+    def on_reset(self, is_hard_reset: bool = True) -> None:
         from .progress import ProgressState
         if self.progress.state is not ProgressState.unset:
             self.progress.update(0)  # unset
@@ -2458,6 +2461,7 @@ class Window:
         if progress >= 1.0:
             # Ensure we land exactly on a line boundary with pixel_scroll_offset_y = 0
             self.screen.scroll_to_absolute(max(0, a.start_scrolled_by - a.total))
+            remove_timer(a.timer)
             a.timer = 0
         else:
             # Use absolute positioning to avoid pixel rounding errors from incremental fractional scrolls

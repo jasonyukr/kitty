@@ -22,6 +22,7 @@ from typing import (
     Literal,
     Optional,
     Union,
+    cast,
 )
 from weakref import WeakValueDictionary
 
@@ -151,7 +152,7 @@ from .session import (
 from .shaders import load_shader_programs
 from .simple_cli_definitions import grab_keyboard_docs
 from .tabs import SpecialWindow, SpecialWindowInstance, Tab, TabDict, TabManager
-from .types import _T, AsyncResponse, LayerShellConfig, SingleInstanceData, WindowSystemMouseEvent, ac
+from .types import AsyncResponse, LayerShellConfig, SingleInstanceData, WindowSystemMouseEvent, ac
 from .typing_compat import PopenType, TypedDict
 from .utils import (
     cleanup_ssh_control_masters,
@@ -899,7 +900,8 @@ class Boss:
                 for x in payload:
                     c.response_from_kitty(self, self_window, PayloadGetter(c, x if isinstance(x, dict) else {}))
                 return None
-            return c.response_from_kitty(self, self_window, PayloadGetter(c, payload if isinstance(payload, dict) else {}))
+            pd = cast(dict[str, Any], payload if isinstance(payload, dict) else {})
+            return c.response_from_kitty(self, self_window, PayloadGetter(c, pd))
         except Exception as e:
             if silent:
                 log_error(f'Failed to run remote_control mapping: {aa} with error: {e}')
@@ -1037,11 +1039,13 @@ class Boss:
             for w, val in changes.items():
                 w.ignore_focus_changes = val
 
-    def on_child_death(self, window_id: int) -> None:
+    def on_child_death(self, window_id: int, child_died: bool, exit_status: int) -> None:
         prev_active_window = self.active_window
         window = self.window_id_map.pop(window_id, None)
         if window is None:
             return
+        window.child_died, window.child_exit_status = child_died, exit_status
+        window.child_exit_code = os.waitstatus_to_exitcode(exit_status)
         with self.suppress_focus_change_events():
             for close_action in window.actions_on_close:
                 try:
@@ -2017,7 +2021,7 @@ class Boss:
                             window.on_drop(drop)
                             break
         elif tab_bar.left <= x < tab_bar.right and tab_bar.top <= y < tab_bar.bottom:
-            if (tab_id := tm.tab_bar.tab_id_at(x)) and (tab := self.tab_for_id(tab_id)) and (w := tab.active_window):
+            if (tab_id := tm.tab_bar.tab_id_at(x, y)) and (tab := self.tab_for_id(tab_id)) and (w := tab.active_window):
                 w.on_drop(drop)
 
     def on_drag_source_finished(
@@ -2893,11 +2897,11 @@ class Boss:
         def doit(activation_token: str = '') -> None:
             nonlocal env
             pass_fds: list[int] = []
-            fds_to_close_on_launch_failure: list[int] = []
             if allow_remote_control:
                 remote = self.add_fd_based_remote_control(remote_control_passwords)
                 pass_fds.append(remote.fileno())
                 add_env('KITTY_LISTEN_ON', f'fd:{remote.fileno()}')
+                add_env('KITTY_PUBLIC_KEY', self.encryption_public_key)
             if activation_token:
                 add_env('XDG_ACTIVATION_TOKEN', activation_token)
             fds_to_close_on_launch_failure = list(pass_fds)
@@ -3169,7 +3173,7 @@ class Boss:
         if theme_colors.has_applied_theme:
             theme_colors.refresh()
             if theme_colors.has_applied_theme:  # in case the theme file was deleted
-                assert theme_colors.applied_theme  # to make mypy happy
+                assert theme_colors.applied_theme  # to make type check happy
                 theme_colors.apply_theme(theme_colors.applied_theme, notify_on_bg_change=False)
         for w in self.all_windows:
             if w.screen.color_profile.default_bg != bg_colors_before.get(w.id):
@@ -3302,7 +3306,8 @@ class Boss:
         except (Exception, SystemExit) as err:
             self.show_error('Failed to set colors', str(err))
             return
-        c.response_from_kitty(self, self.window_for_dispatch or self.active_window, PayloadGetter(c, payload if isinstance(payload, dict) else {}))
+        pd = cast(dict[str, Any], payload if isinstance(payload, dict) else {})
+        c.response_from_kitty(self, self.window_for_dispatch or self.active_window, PayloadGetter(c, pd))
 
     def _move_window_to(
         self,
@@ -3394,7 +3399,7 @@ class Boss:
         target_tab.make_active()
         return target_tab
 
-    def choose_entry(
+    def choose_entry[_T](
         self, title: str, entries: Iterable[tuple[_T | str | None, str]],
         callback: Callable[[_T | str | None], None],
         subtitle: str = '',

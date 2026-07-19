@@ -386,6 +386,20 @@ class TestGraphics(BaseTest):
         self.assertIsNone(li(payload='2' * 12, z=77, m=1, q=2))
         self.assertIsNone(li(payload='2' * 12))
 
+    def test_transient_graphics_image(self):
+        s, g, pl, sl = load_helpers(self)
+        self.assertEqual(g.disk_cache.end_of_data_offset(), 0)
+        self.ae(pl('abc', s=1, v=1, f=24, N=1), 'OK')
+        self.assertTrue(g.disk_cache.wait_for_write())
+        self.assertEqual(g.disk_cache.end_of_data_offset(), 0)
+        img = g.image_for_client_id(1)
+        self.assertIsNotNone(img)
+        self.ae(img['data'], b'abc')
+
+        self.ae(pl('def', s=1, v=1, f=24, i=2), 'OK')
+        self.assertTrue(g.disk_cache.wait_for_write())
+        self.assertGreater(g.disk_cache.end_of_data_offset(), 0)
+
     def test_load_images(self):
         s, g, pl, sl = load_helpers(self)
         self.assertEqual(g.disk_cache.total_size, 0)
@@ -632,6 +646,13 @@ class TestGraphics(BaseTest):
         self.ae(put_image(s, 2*cw, 2*ch, num_cols=3)[1], 'OK')
         self.ae((s.cursor.x, s.cursor.y), (3, 2))
         rect_eq(layers(s)[0]['dest_rect'], -1, 1, -1 + 3 * dx, 1 - 3*dy)
+
+    def test_graphics_put_with_pixel_offsets(self):
+        cw, ch = 10, 20
+        # Image 10x20 placed with 5px X and Y pixel offsets
+        s, dx, dy, put_image, put_ref, layers, rect_eq = put_helpers(self, cw, ch)
+        self.ae(put_image(s, 10, 20, cell_x_off=5, cell_y_off=5)[1], 'OK')
+        self.ae((s.cursor.x, s.cursor.y), (2, 1))
 
     def test_image_layer_grouping(self):
         cw, ch = 10, 20
@@ -1304,6 +1325,25 @@ class TestGraphics(BaseTest):
         s.reset()
         self.ae(g.image_count, 0)
         self.assertEqual(g.disk_cache.total_size, 0)
+
+    def test_transient_image_preferential_eviction(self):
+        # Transient images should be evicted before non-transient ones when
+        # the storage quota is exceeded, regardless of insertion order.
+        s = self.create_screen()
+        g = s.grman
+        g.storage_limit = 36 * 2
+        li = make_send_command(s)
+        # Load a non-transient image first (older atime) and a transient image second.
+        self.assertEqual(li(a='T', i=1).code, 'OK')
+        self.assertEqual(li(a='T', i=2, N=1).code, 'OK')
+        self.assertEqual(g.image_count, 2)
+        # Adding a third image triggers the quota; the transient image (i=2) must be
+        # evicted first even though the non-transient image (i=1) is older.
+        self.assertEqual(li(a='T', i=3).code, 'OK')
+        self.assertEqual(g.image_count, 2)
+        self.assertIsNone(g.image_for_client_id(2), 'transient image should have been evicted')
+        self.assertIsNotNone(g.image_for_client_id(1), 'non-transient image should survive')
+        self.assertIsNotNone(g.image_for_client_id(3), 'newly added image should survive')
 
     @unittest.skipIf(Image is None, 'PIL not available, skipping PNG tests')
     def test_cached_rgba_conversion(self):

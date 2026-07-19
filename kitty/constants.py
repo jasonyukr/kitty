@@ -22,7 +22,7 @@ class Version(NamedTuple):
 
 appname: str = 'kitty'
 kitty_face = '🐱'
-version: Version = Version(0, 47, 4)
+version: Version = Version(0, 48, 0)
 str_version: str = '.'.join(map(str, version))
 _plat = sys.platform.lower()
 is_macos: bool = 'darwin' in _plat
@@ -233,27 +233,13 @@ def running_in_kitty(set_val: bool | None = None) -> bool:
 
 
 def list_kitty_resources(package: str = 'kitty') -> Iterator[str]:
-    try:
-        if sys.version_info[:2] < (3, 10):
-            raise ImportError("importlib.resources.files() doesn't work with frozen builds on python 3.9")
-        from importlib.resources import files
-    except ImportError:
-        from importlib.resources import contents
-        return iter(contents(package))
-    else:
-        return (path.name for path in files(package).iterdir())
+    from importlib.resources import files
+    return (path.name for path in files(package).iterdir())
 
 
 def read_kitty_resource(name: str, package_name: str = 'kitty') -> bytes:
-    try:
-        if sys.version_info[:2] < (3, 10):
-            raise ImportError("importlib.resources.files() doesn't work with frozen builds on python 3.9")
-        from importlib.resources import files
-    except ImportError:
-        from importlib.resources import read_binary
-        return read_binary(package_name, name)
-    else:
-        return (files(package_name) / name).read_bytes()
+    from importlib.resources import files
+    return (files(package_name) / name).read_bytes()
 
 
 def website_url(doc_name: str = '', website: str = website_base_url) -> str:

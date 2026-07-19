@@ -1204,6 +1204,43 @@ class TestScreen(BaseTest):
         self.ae('2', s.hyperlink_at(1, 3))
         self.ae(s.current_url_text(), 'Z Z')
 
+    def test_text_cache_garbage_collection(self):
+        # unique multi-codepoint cell texts, single width base + combining mark
+        def unique_text(i):
+            return chr(0x100 + i // 0x70) + chr(0x300 + i % 0x70)
+
+        s = self.create_screen()
+        base = s.text_cache_count()
+        for i in range(10):
+            s.draw(unique_text(i))
+        self.ae(s.text_cache_count(), base + 10)
+        before = tuple(str(s.line(y)) for y in range(s.lines))
+        s.garbage_collect_text_cache()
+        # all entries are still referenced by cells, so all survive
+        self.ae(s.text_cache_count(), base + 10)
+        self.ae(before, tuple(str(s.line(y)) for y in range(s.lines)))
+
+        # scroll all multi-codepoint cells out of the screen and the history
+        # buffer, then intern one more entry, which gets a high index
+        for i in range(s.lines * 3):
+            s.linefeed()
+        s.carriage_return()
+        s.draw(unique_text(10))
+        s.garbage_collect_text_cache()
+        # only the surviving entry remains and its index was remapped
+        # without changing the cell's text
+        self.ae(s.text_cache_count(), base + 1)
+        self.ae(str(s.line(s.cursor.y)).rstrip(), unique_text(10))
+
+        # the periodic GC keeps the cache bounded when unique cell texts
+        # are continuously created and scrolled out, as in the DoS scenario
+        s = self.create_screen()
+        num = 3 * 8192 + 100
+        for i in range(num):
+            s.draw(unique_text(i))
+        self.assertLess(s.text_cache_count(), 8192 + 2 * s.lines * s.columns)
+        self.ae(str(s.line(s.cursor.y)).rstrip()[-2:], unique_text(num - 1))
+
     def test_bottom_margin(self):
         s = self.create_screen(cols=80, lines=6, scrollback=4)
         s.set_margins(0, 5)
@@ -1627,8 +1664,8 @@ class TestScreen(BaseTest):
         s.draw('before\r\n')
         draw_prompt('p1'), draw_output(2), mark_prompt(), s.draw('partial')
         x = s.cursor.x
-        s.erase_last_command(False)
-        self.ae('before\n$ p1\npartial', at().rstrip())
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())
         for scroll in (8, 9, 10):
             s.reset()
             s.draw('before'), s.carriage_return(), s.linefeed()
@@ -1640,6 +1677,33 @@ class TestScreen(BaseTest):
         draw_prompt('p1'), draw_output(9), mark_prompt(), s.draw('partial')
         s.erase_last_command()
         self.ae(at().rstrip(), '  a  b\npartial')
+
+        # the most recent command is erased even when it produced no output (an
+        # empty Enter, a comment, cd, ...): such commands emit no OSC 133;C and
+        # must not be skipped in favour of an older command-with-output.
+        s = self.create_screen(cols=10, lines=12, scrollback=30)
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(2), draw_prompt('# note'), mark_prompt(), s.draw('partial')
+        s.erase_last_command()
+        self.ae('before\n$ p1\n0\n1\npartial', at().rstrip())  # the output-less command goes first
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())              # then the command with output
+        # consecutive output-less commands are removed newest-first, one per call
+        s.reset()
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(1), draw_prompt('e1'), draw_prompt('e2'), mark_prompt(), s.draw('partial')
+        s.erase_last_command()
+        self.ae('before\n$ p1\n0\n$ e1\npartial', at().rstrip())
+        s.erase_last_command()
+        self.ae('before\n$ p1\n0\npartial', at().rstrip())
+        s.erase_last_command()
+        self.ae('before\npartial', at().rstrip())
+        # multi-line live prompt: the command region is erased with no residual
+        s.reset()
+        s.draw('before\r\n')
+        draw_prompt('p1'), draw_output(9), mark_prompt(), s.draw('l1'), s.carriage_return(), s.index(), s.draw('partial')
+        s.erase_last_command()
+        self.ae('before\nl1\npartial', at().rstrip())
 
     def test_pointer_shapes(self):
         from kitty.window import set_pointer_shape
@@ -1799,6 +1863,57 @@ class TestScreen(BaseTest):
             sc(1, slot=slot)
             sc(2, 1, 2, 3, slot=slot)
             sc(5, 13, slot=slot)
+
+    def test_soft_reset(self):
+        SOFT_RESET = b'\x1b[!p'  # DECSTR sequence
+
+        # Screen content is preserved (unlike hard reset)
+        s = self.create_screen()
+        s.draw('hello')
+        parse_bytes(s, SOFT_RESET)
+        self.ae(str(s.line(0)), 'hello')
+
+        # Hard reset clears screen content; soft reset does not
+        s = self.create_screen()
+        s.draw('hello')
+        s.reset()
+        self.ae(str(s.line(0)), '')
+
+        # Cursor SGR attributes are cleared
+        s = self.create_screen()
+        s.select_graphic_rendition(1)   # bold
+        s.select_graphic_rendition(31)  # red fg
+        self.assertTrue(s.cursor.bold)
+        self.assertNotEqual(s.cursor.fg, 0)
+        parse_bytes(s, SOFT_RESET)
+        self.assertFalse(s.cursor.bold)
+        self.ae(s.cursor.fg, 0)
+
+        # Cursor position is preserved
+        s = self.create_screen()
+        s.cursor_position(3, 4)
+        self.ae((s.cursor.y, s.cursor.x), (2, 3))
+        parse_bytes(s, SOFT_RESET)
+        self.ae((s.cursor.y, s.cursor.x), (2, 3))
+
+        # Insert mode (IRM) is cleared
+        s = self.create_screen()
+        s.draw('abcde')
+        s.set_mode(IRM)
+        parse_bytes(s, SOFT_RESET)
+        # without IRM, drawing overwrites
+        s.cursor.x = 0
+        s.draw('X')
+        self.ae(str(s.line(0)), 'Xbcde')
+
+        # Alternate screen is NOT exited on soft reset
+        s = self.create_screen()
+        parse_bytes(s, b'\x1b[?1049h')  # enter alternate screen
+        self.assertFalse(s.is_main_linebuf())
+        parse_bytes(s, SOFT_RESET)
+        self.assertFalse(s.is_main_linebuf())
+        s.reset()
+        self.assertTrue(s.is_main_linebuf())
 
 
 def detect_url(self, scale=1):

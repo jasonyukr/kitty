@@ -89,28 +89,6 @@ type Result struct {
 	Cwd                  string           `json:"cwd"`
 }
 
-func encode_hint(num int, alphabet string) (res string) {
-	runes := []rune(alphabet)
-	d := len(runes)
-	for res == "" || num > 0 {
-		res = string(runes[num%d]) + res
-		num /= d
-	}
-	return
-}
-
-func decode_hint(x string, alphabet string) (ans int) {
-	base := len(alphabet)
-	index_map := make(map[rune]int, len(alphabet))
-	for i, c := range alphabet {
-		index_map[c] = i
-	}
-	for _, char := range x {
-		ans = ans*base + index_map[char]
-	}
-	return
-}
-
 func as_rgb(c uint32) [3]float32 {
 	return [3]float32{float32((c>>16)&255) / 255.0, float32((c>>8)&255) / 255.0, float32(c&255) / 255.0}
 }
@@ -344,7 +322,8 @@ func main(_ *cli.Command, o *Options, args []string) (rc int, err error) {
 		} else if ev.MatchesPressOrRepeat("enter") || ev.MatchesPressOrRepeat("space") {
 			ev.Handled = true
 			if current_input != "" {
-				idx := decode_hint(current_input, alphabet)
+				char_to_index := rune_to_index_map(alphabet)
+				idx := decode_hint(current_input, char_to_index)
 				if m := index_map[idx]; m != nil {
 					chosen = append(chosen, m)
 					ignore_mark_indices.Add(idx)

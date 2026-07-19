@@ -145,10 +145,10 @@
     },
 
     {
-        "name": "python 3.14.5",
+        "name": "python 3.14.6",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:7e32597b99e5d9a39abed35de4693fa169df3e5850d4c334337ffd6a19a36db6",
+            "hash": "sha256:143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63",
             "urls": ["https://www.python.org/ftp/python/{version}/Python-{version}.{file_extension}"]
         }
     },
@@ -202,12 +202,12 @@
     },
 
     {
-        "name": "glib 2.86.3",
+        "name": "glib 2.88.1",
         "os": "linux",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:b3211d8d34b9df5dca05787ef0ad5d7ca75dec998b970e1aab0001d229977c65",
-            "urls": ["https://download.gnome.org/sources/glib/{version_except_last}/{filename}"]
+            "hash": "sha256:51ab804c56f6eab3e5045c774d1290ac5e4c923d4f9a3d8e33123bee45c1840e",
+            "urls": ["https://ftp.gnome.org/pub/GNOME/sources/glib/{version_except_last}/{filename}"]
         }
     },
 
@@ -271,11 +271,10 @@
     },
 
     {
-        "name": "simde 0.7.6",
-        "comment": "Cannot update till gcc in the build VM is updated as simde 0.8 requires newer gcc",
+        "name": "simde 0.8.2",
         "unix": {
             "file_extension": "tar.xz",
-            "hash": "sha256:703eac1f2af7de1f7e4aea2286130b98e1addcc0559426e78304c92e2b4eb5e1",
+            "hash": "sha256:59068edc3420e75c5ff85ecfd80a77196fb3a151227a666cc20abb313a5360bf",
             "urls": ["https://github.com/simd-everywhere/simde/releases/download/v{version}/simde-amalgamated-{version}.{file_extension}"]
         }
     },

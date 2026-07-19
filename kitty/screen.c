@@ -173,13 +173,13 @@ new_screen_object(PyTypeObject *type, PyObject *args, PyObject UNUSED *kwds) {
 
 static Line* range_line_(Screen *self, int y);
 
-void
-screen_reset(Screen *self) {
+static void
+do_screen_reset(Screen *self, bool is_hard_reset) {
     screen_pause_rendering(self, false, 0);
     self->dnd_chunking.active = false;
     self->extra_cursors.count = 0; zero_at_ptr(&self->extra_cursors.color); self->extra_cursors.dirty = true;
     self->main_pointer_shape_stack.count = 0; self->alternate_pointer_shape_stack.count = 0;
-    if (self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self, true, true);
+    if (is_hard_reset && self->linebuf == self->alt_linebuf) screen_toggle_screen_buffer(self, true, true);
     if (screen_is_overlay_active(self)) {
         deactivate_overlay_line(self);
         // Cancel IME composition
@@ -197,11 +197,13 @@ screen_reset(Screen *self) {
     self->last_graphic_char = 0;
     self->main_savepoint.is_valid = false;
     self->alt_savepoint.is_valid = false;
-    linebuf_clear(self->linebuf, BLANK_CHAR);
-    historybuf_clear(self->historybuf);
-    clear_hyperlink_pool(self->hyperlink_pool);
-    grman_clear(self->main_grman, false, self->cell_size);  // dont delete images in scrollback
-    grman_clear(self->alt_grman, true, self->cell_size);
+    if (is_hard_reset) {
+        linebuf_clear(self->linebuf, BLANK_CHAR);
+        historybuf_clear(self->historybuf);
+        clear_hyperlink_pool(self->hyperlink_pool);
+        grman_clear(self->main_grman, false, self->cell_size);  // dont delete images in scrollback
+        grman_clear(self->alt_grman, true, self->cell_size);
+    }
     self->modes = empty_modes;
     self->saved_modes = empty_modes;
     self->active_hyperlink_id = 0;
@@ -218,7 +220,17 @@ screen_reset(Screen *self) {
     screen_cursor_position(self, 1, 1);
     set_dynamic_color(self, 111, NULL);  // does default_bg_changed processing
     colorprofile_reset(self->color_profile);
-    CALLBACK("on_reset", NULL)
+    CALLBACK("on_reset", "O", is_hard_reset ? Py_True : Py_False);
+}
+
+void
+screen_reset(Screen *self) { do_screen_reset(self, true); }
+
+void
+screen_soft_reset(Screen *self) {
+    index_type x = self->cursor->x, y = self->cursor->y;
+    do_screen_reset(self, false);
+    self->cursor->x = x; self->cursor->y = y;
 }
 
 void
@@ -905,6 +917,45 @@ set_active_hyperlink(Screen *self, char *id, char *url) {
     }
 }
 
+static void
+text_cache_gc_process_cells(TextCache *tc, TextCacheGCData *gc, CPUCell *cells, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        CPUCell *c = cells + i;
+        if (!c->ch_is_idx) continue;
+        char_type new_idx;
+        if (tc_gc_map_index(tc, gc, c->ch_or_idx, &new_idx)) c->ch_or_idx = new_idx;
+        else cell_set_char(c, 0);  // stale index, should not happen
+    }
+}
+
+static void
+text_cache_gc_process_linebuf(TextCache *tc, TextCacheGCData *gc, LineBuf *lb) {
+    if (lb) text_cache_gc_process_cells(tc, gc, lb->cpu_cell_buf, (size_t)lb->ynum * lb->xnum);
+}
+
+void
+screen_garbage_collect_text_cache(Screen *self) {
+    // The TextCache interns unique cell texts forever; remap every live cell
+    // index onto a fresh cache so entries that scrolled out of the history
+    // buffer are freed. Mirrors screen_garbage_collect_hyperlink_pool().
+    TextCacheGCData *gc = tc_gc_begin(self->text_cache);
+    if (!gc) return;  // allocation failure, cache left unchanged
+    if (self->historybuf->count) {
+        for (index_type y = self->historybuf->count; y-- > 0;) {
+            CPUCell *cells = historybuf_cpu_cells(self->historybuf, y);
+            text_cache_gc_process_cells(self->text_cache, gc, cells, self->historybuf->xnum);
+        }
+    }
+    text_cache_gc_process_linebuf(self->text_cache, gc, self->main_linebuf);
+    text_cache_gc_process_linebuf(self->text_cache, gc, self->alt_linebuf);
+    text_cache_gc_process_linebuf(self->text_cache, gc, self->paused_rendering.linebuf);
+    if (self->overlay_line.cpu_cells) text_cache_gc_process_cells(
+        self->text_cache, gc, self->overlay_line.cpu_cells, self->overlay_line.xnum);
+    if (self->overlay_line.original_line.cpu_cells) text_cache_gc_process_cells(
+        self->text_cache, gc, self->overlay_line.original_line.cpu_cells, self->overlay_line.xnum);
+    tc_gc_end(self->text_cache, gc);
+}
+
 static bool
 add_combining_char(Screen *self, char_type ch, index_type x, index_type y) {
     CPUCell *cpu_cells = linebuf_cpu_cells_for_line(self->linebuf, y);
@@ -1212,6 +1263,7 @@ draw_text_loop(Screen *self, const uint32_t *chars, size_t num_chars, text_loop_
 }
 
 #define PREPARE_FOR_DRAW_TEXT \
+    if (tc_should_gc(self->text_cache)) screen_garbage_collect_text_cache(self); \
     const bool force_underline = OPT(underline_hyperlinks) == UNDERLINE_ALWAYS && self->active_hyperlink_id != 0; \
     CellAttrs attrs = cursor_to_attrs(self->cursor); \
     if (force_underline) attrs.decoration = OPT(url_style); \
@@ -3439,21 +3491,31 @@ effective_cell_edge_color(char_type ch, color_type fg, color_type bg, bool is_le
 
 
 bool
-get_line_edge_colors(Screen *self, color_type *left, color_type *right) {
-    // Return the color at the left and right edges of the line with the cursor on it
-    Line *line = range_line_(self, self->cursor->y);
+get_line_edge_colors_at_row(Screen *self, index_type y, color_type *left, color_type *right, bool *left_is_default, bool *right_is_default) {
+    // Return the color at the left and right edges of the specified row.
+    // Any of the output pointers may be NULL if that value is not needed.
+    Line *line = range_line_(self, y);
     if (!line) return false;
     color_type left_cell_fg = OPT(foreground), left_cell_bg = OPT(background), right_cell_bg = OPT(background), right_cell_fg = OPT(foreground);
     index_type cell_color_x = 0;
     char_type left_char = line_get_char(line, cell_color_x);
     bool reversed = false;
     colors_for_cell(line, self->color_profile, &cell_color_x, &left_cell_fg, &left_cell_bg, &reversed);
+    if (left_is_default) *left_is_default = (line->gpu_cells[cell_color_x].bg & 0xff) == 0;
+    if (left) *left = effective_cell_edge_color(left_char, left_cell_fg, left_cell_bg, true);
     if (line->xnum > 0) cell_color_x = line->xnum - 1;
     char_type right_char = line_get_char(line, cell_color_x);
+    reversed = false;  // reset: colors_for_cell only sets this flag, never clears it
     colors_for_cell(line, self->color_profile, &cell_color_x, &right_cell_fg, &right_cell_bg, &reversed);
-    *left = effective_cell_edge_color(left_char, left_cell_fg, left_cell_bg, true);
-    *right = effective_cell_edge_color(right_char, right_cell_fg, right_cell_bg, false);
+    if (right_is_default) *right_is_default = (line->gpu_cells[cell_color_x].bg & 0xff) == 0;
+    if (right) *right = effective_cell_edge_color(right_char, right_cell_fg, right_cell_bg, false);
     return true;
+}
+
+bool
+get_line_edge_colors(Screen *self, color_type *left, color_type *right) {
+    // Return the color at the left and right edges of the line with the cursor on it
+    return get_line_edge_colors_at_row(self, self->cursor->y, left, right, NULL, NULL);
 }
 
 
@@ -4444,6 +4506,12 @@ update_overlay_line_data(Screen *self, uint8_t *data) {
 #define WRAP2B(name) static PyObject* name(Screen *self, PyObject *args) { unsigned int a, b; int p; if(!PyArg_ParseTuple(args, "IIp", &a, &b, &p)) return NULL; screen_##name(self, a, b, (bool)p); Py_RETURN_NONE; }
 
 WRAP0(garbage_collect_hyperlink_pool)
+WRAP0(garbage_collect_text_cache)
+
+static PyObject*
+text_cache_count(Screen *self, PyObject *a UNUSED) {
+    return PyLong_FromUnsignedLong((unsigned long)tc_num_entries(self->text_cache));
+}
 
 static PyObject*
 has_selection(Screen *self, PyObject *a UNUSED) {
@@ -4599,27 +4667,47 @@ find_cmd_output(Screen *self, OutputOffset *oo, index_type start_screen_y, unsig
 }
 
 static PyObject*
-erase_last_command(Screen *self, PyObject *args) {
-    int include_prompt = 1;
-    if (!PyArg_ParseTuple(args, "|p", &include_prompt)) return NULL;
-    OutputOffset oo = {.screen=self};
-    if (self->linebuf != self->main_linebuf || !find_cmd_output(self, &oo, self->cursor->y + self->scrolled_by, self->scrolled_by, -1, false)) Py_RETURN_FALSE;
-    if (include_prompt) {
-        int y = oo.start - 1; Line *line;
-        while ((line = checked_range_line(self, y))) {
-            oo.start--; oo.num_lines++; y--;
-            if (line->attrs.prompt_kind == PROMPT_START) break;
-        }
+erase_last_command(Screen *self, PyObject *args UNUSED) {
+    if (self->linebuf != self->main_linebuf) Py_RETURN_FALSE;
+    Line *line;
+    // Erase the most recent command: the prompt block immediately above the
+    // current (live) prompt, regardless of whether that command produced any
+    // output. Commands without output (an empty Enter, a comment, cd, export,
+    // ...) emit no OSC 133;C, so a search anchored on OUTPUT_START would skip
+    // them and erase an older command instead. Selecting by prompt marks makes
+    // every submitted command one unit, removed newest-first.
+    int y = self->cursor->y + self->scrolled_by;
+    bool found = false;
+    for (; (line = checked_range_line(self, y)); y--) {
+        if (line->attrs.prompt_kind == PROMPT_START) { found = true; break; }
     }
-    index_type num_lines_to_erase_in_screen = oo.start >= 0 ? oo.num_lines : oo.num_lines + oo.start;
+    if (!found) Py_RETURN_FALSE;
+    const int live_prompt_start = y;
+    found = false;
+    for (y = live_prompt_start - 1; (line = checked_range_line(self, y)); y--) {
+        if (line->attrs.prompt_kind == PROMPT_START) { found = true; break; }
+    }
+    if (!found) Py_RETURN_FALSE;  // nothing above the current prompt to erase
+    const int start = y;
+    const index_type num_lines = (index_type)(live_prompt_start - start);
+    index_type num_lines_to_erase_in_screen = start >= 0 ? num_lines : num_lines + start;
     num_lines_to_erase_in_screen = MIN(self->cursor->y, num_lines_to_erase_in_screen);
     if (num_lines_to_erase_in_screen) {
-        screen_delete_lines_impl(self, self->cursor->y - num_lines_to_erase_in_screen, num_lines_to_erase_in_screen, 0, self->lines - 1);
+        // Anchor the on-screen deletion at the top of the region, not at
+        // cursor->y - count: a multi-line prompt or rows skipped above would
+        // otherwise shift the deletion and leave residual lines on screen.
+        index_type screen_erase_start = start >= 0 ? (index_type)start : 0;
+        screen_delete_lines_impl(self, screen_erase_start, num_lines_to_erase_in_screen, 0, self->lines - 1);
         self->cursor->y -= num_lines_to_erase_in_screen;
     }
-    if (oo.num_lines > num_lines_to_erase_in_screen) {
-        index_type num_of_lines_to_erase_from_history = oo.num_lines - num_lines_to_erase_in_screen;
-        historybuf_delete_newest_lines(self->historybuf, num_of_lines_to_erase_from_history);
+    if (num_lines > num_lines_to_erase_in_screen) {
+        historybuf_delete_newest_lines(self->historybuf, num_lines - num_lines_to_erase_in_screen);
+        // The scrollback shrank: clamp the scroll position and signal a redraw,
+        // otherwise the deletion of off-screen lines is not reflected until the
+        // next scroll event forces the history viewport to be recomputed.
+        self->scrolled_by = MIN(self->scrolled_by, self->historybuf->count);
+        self->is_dirty = true;
+        dirty_scroll(self);
     }
     Py_RETURN_TRUE;
 }
@@ -4980,7 +5068,7 @@ resize(Screen *self, PyObject *args) {
 
 WRAP0x(index)
 WRAP0(reverse_index)
-WRAP0(reset)
+static PyObject* reset(Screen *self, PyObject *args) { int hard = true; if (!PyArg_ParseTuple(args, "|p", &hard)) return NULL; if (hard) screen_reset(self); else screen_soft_reset(self); Py_RETURN_NONE; }
 WRAP0(set_tab_stop)
 WRAP1(clear_tab_stop, 0)
 WRAP0(reset_tab_stops)
@@ -6221,12 +6309,12 @@ static PyMethodDef methods[] = {
     MND(draw, METH_O)
     MND(apply_sgr, METH_O)
     MND(cursor_position, METH_VARARGS)
-    MND(erase_last_command, METH_VARARGS)
+    MND(erase_last_command, METH_NOARGS)
     MND(set_window_char, METH_VARARGS)
     MND(set_progress, METH_VARARGS)
     MND(set_mode, METH_VARARGS)
     MND(reset_mode, METH_VARARGS)
-    MND(reset, METH_NOARGS)
+    MND(reset, METH_VARARGS)
     MND(reset_dirty, METH_NOARGS)
     MND(is_using_alternate_linebuf, METH_NOARGS)
     MND(is_main_linebuf, METH_NOARGS)
@@ -6237,6 +6325,8 @@ static PyMethodDef methods[] = {
     MND(scroll_until_cursor_prompt, METH_VARARGS)
     MND(hyperlinks_as_set, METH_NOARGS)
     MND(garbage_collect_hyperlink_pool, METH_NOARGS)
+    MND(garbage_collect_text_cache, METH_NOARGS)
+    MND(text_cache_count, METH_NOARGS)
     MND(hyperlink_for_id, METH_O)
     MND(reverse_scroll, METH_VARARGS)
     MND(scroll_prompt_to_bottom, METH_NOARGS)

@@ -65,7 +65,8 @@ typedef struct Options {
     float cursor_trail_decay_fast;
     float cursor_trail_decay_slow;
     color_type cursor_trail_color;
-    float cursor_trail_start_threshold;
+    int cursor_trail_start_threshold_x;
+    int cursor_trail_start_threshold_y;
     unsigned int url_style;
     unsigned int scrollback_pager_history_size;
     bool scrollback_fill_enlarged_window;
@@ -78,11 +79,11 @@ typedef struct Options {
         bool on_cross, on_drop;
     } focus_follows_mouse;
     unsigned int hide_window_decorations;
-    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen, macos_fullscreen_ignore_safe_area_insets;
+    bool macos_hide_from_tasks, macos_quit_when_last_window_closed, macos_window_resizable, macos_traditional_fullscreen, macos_fullscreen_ignore_safe_area_insets, macos_use_physical_screen_frame;
     unsigned int macos_option_as_alt;
     float macos_thicken_font;
     WindowTitleIn macos_show_window_title_in;
-    char *bell_path, *bell_theme;
+    char *bell_path, *bell_theme, *macos_ns_window_layer;
     float background_opacity, dim_opacity;
 
     ScrollbarVisibilityPolicy scrollbar;
@@ -110,6 +111,7 @@ typedef struct Options {
     bool dynamic_background_opacity;
     float inactive_text_alpha;
     Edge tab_bar_edge;
+    int tab_title_max_length;
     DisableLigature disable_ligatures;
     bool force_ltr;
     bool resize_in_steps;
@@ -445,7 +447,6 @@ typedef struct OSWindow {
     double mouse_x, mouse_y;
     bool mouse_button_pressed[32];
     bool has_too_few_tabs;
-    bool suppress_left_mouse_release;
     PyObject *window_title;
     bool disallow_title_changes, title_is_overriden;
     bool viewport_size_dirty, viewport_updated_at_least_once;

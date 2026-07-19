@@ -63,10 +63,11 @@ typedef struct {
 
 typedef struct {
     Screen *screen;
-    bool needs_removal;
+    bool needs_removal, child_died;
     int fd;
     unsigned long id;
     pid_t pid;
+    int exit_status;
 } Child;
 
 static const Child EMPTY_CHILD = {0};
@@ -232,6 +233,7 @@ static void* talk_loop(void *data);
 static void send_response_to_peer(id_type peer_id, const char *msg, size_t msg_sz, bool is_async_response);
 static void wakeup_talk_loop(bool);
 static bool add_peer_to_injection_queue(int peer_fd, int pipe_fd);
+static int start_talk_thread(ChildMonitor*);
 static bool talk_thread_started = false;
 
 static bool
@@ -252,13 +254,7 @@ inject_peer(PyObject *s, PyObject *a) {
     if (!PyLong_Check(a)) { PyErr_SetString(PyExc_TypeError, "peer fd must be an int"); return NULL; }
     long fd = PyLong_AsLong(a);
     if (fd < 0) { PyErr_Format(PyExc_ValueError, "Invalid peer fd: %ld", fd); return NULL; }
-    if (!talk_thread_started) {
-        int ret;
-        if ((ret = pthread_create(&self->talk_thread, NULL, talk_loop, self)) != 0) {
-            return PyErr_Format(PyExc_OSError, "Failed to start talk thread with error: %s", strerror(ret));
-        }
-        talk_thread_started = true;
-    }
+    if ((errno = start_talk_thread(self)) != 0) return PyErr_SetFromErrno(PyExc_OSError);
     int fds[2] = {0};
     if (!self_pipe(fds, false)) {
         safe_close(fd, __FILE__, __LINE__);
@@ -284,10 +280,7 @@ start(PyObject *s, PyObject *a UNUSED) {
     ChildMonitor *self = (ChildMonitor*)s;
     int ret;
     if (self->talk_fd > -1 || self->listen_fd > -1) {
-        if ((ret = pthread_create(&self->talk_thread, NULL, talk_loop, self)) != 0) {
-            return PyErr_Format(PyExc_OSError, "Failed to start talk thread with error: %s", strerror(ret));
-        }
-        talk_thread_started = true;
+        if ((errno = start_talk_thread(self)) != 0) return PyErr_SetFromErrno(PyExc_OSError);
     }
     ret = pthread_create(&self->io_thread, NULL, io_loop, self);
     if (ret != 0) return PyErr_Format(PyExc_OSError, "Failed to start I/O thread with error: %s", strerror(ret));
@@ -370,17 +363,18 @@ static const unsigned write_buf_limit = 100 * 1024 * 1024;
     children_mutex(unlock);
 
 void
-schedule_write_to_child_if_possible(id_type id, const char *data, size_t sz, bool *found, bool *too_much_data) {
+schedule_write_to_child_if_possible(id_type id, const char *data, size_t sz, bool *found, bool *too_much_data, size_t keep_space) {
     children_mutex(lock);
     ChildMonitor *self = the_monitor;
     *found = false; *too_much_data = false;
+    size_t limit = write_buf_limit > keep_space ? write_buf_limit - keep_space : 0;
     for (size_t i = 0; i < self->count; i++) {
         if (children[i].id == id) {
             Screen *screen = children[i].screen;
             screen_mutex(lock, write);
             size_t space_left = screen->write_buf_sz - screen->write_buf_used;
             if (space_left < sz) {
-                if (screen->write_buf_used + sz > write_buf_limit) {
+                if (screen->write_buf_used + sz > limit) {
                     *too_much_data = true;
                     screen_mutex(unlock, write);
                     break;
@@ -563,7 +557,8 @@ parse_input(ChildMonitor *self) {
         // the python function could call into other functions in this module
         remove_count--;
         if (remove_notify[remove_count].screen) do_parse(self, remove_notify[remove_count].screen, now, true);
-        PyObject *t = PyObject_CallFunction(self->death_notify, "k", remove_notify[remove_count].id);
+        PyObject *t = PyObject_CallFunction(
+            self->death_notify, "kOi", remove_notify[remove_count].id, remove_notify[remove_count].child_died ? Py_True : Py_False, remove_notify[remove_count].exit_status);
         if (t == NULL) PyErr_Print();
         else Py_DECREF(t);
         FREE_CHILD(remove_notify[remove_count]);
@@ -1552,11 +1547,13 @@ handle_signal(const siginfo_t *siginfo, void *data) {
 }
 
 static void
-mark_child_for_removal(ChildMonitor *self, pid_t pid) {
+mark_child_for_removal(ChildMonitor *self, pid_t pid, int exit_status) {
     children_mutex(lock);
     for (size_t i = 0; i < self->count; i++) {
         if (children[i].pid == pid) {
             children[i].needs_removal = true;
+            children[i].exit_status = exit_status;
+            children[i].child_died = true;
             break;
         }
     }
@@ -1588,7 +1585,7 @@ reap_children(ChildMonitor *self, bool enable_close_on_child_death) {
         if (pid == -1) {
             if (errno != EINTR) break;
         } else if (pid > 0) {
-            if (enable_close_on_child_death) mark_child_for_removal(self, pid);
+            if (enable_close_on_child_death) mark_child_for_removal(self, pid, status);
             mark_monitored_pids(pid, status);
         } else break;
     }
@@ -1774,6 +1771,15 @@ typedef struct {
     LoopData loop_data;
 } TalkData;
 static TalkData talk_data = {0};
+
+static int
+start_talk_thread(ChildMonitor *self) {
+    if (talk_thread_started) return 0;
+    if (!init_loop_data(&talk_data.loop_data, 0)) return errno;
+    int ret = pthread_create(&self->talk_thread, NULL, talk_loop, self);
+    talk_thread_started = ret == 0;
+    return ret;
+}
 
 typedef struct pollfd PollFD;
 #define PEER_LIMIT 256
@@ -2004,7 +2010,7 @@ talk_loop(void *data) {
     // The talk thread loop
     ChildMonitor *self = (ChildMonitor*)data;
     set_thread_name("KittyPeerMon");
-    if (!init_loop_data(&talk_data.loop_data, 0)) { log_error("Failed to create wakeup fd for talk thread with error: %s", strerror(errno)); }
+    // talk_data.loop_data is initialized by the thread that spawns this one, before it is spawned (see inject_peer() and start())
     PollFD fds[PEER_LIMIT + 8] = {{0}};
     size_t num_listen_fds = 0, num_peer_fds = 0;
 #define add_listener(which) \

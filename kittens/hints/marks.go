@@ -706,6 +706,13 @@ process_answer:
 	}
 	largest_index := ans[len(ans)-1].Index
 	offset := max(0, opts.HintsOffset)
+	if opts.PrefixFree {
+		alphabetLength := len(opts.Alphabet)
+		if alphabetLength == 0 {
+			alphabetLength = len(DEFAULT_HINT_ALPHABET)
+		}
+		offset = max(offset, hints_to_skip(len(ans), alphabetLength))
+	}
 	index_map = make(map[int]*Mark, len(ans))
 	for i := range ans {
 		m := &ans[i]
