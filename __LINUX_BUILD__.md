@@ -12,6 +12,27 @@ that is what the rest of this file is for.
 
 ---
 
+## 0. Why do we need to build ourself?
+
+The official install method fails on ol9 host machine due to GLIBC version mismatch (since v0.48.0).
+```
+jinhyu@ol9:~% curl -L https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100  4571  100  4571    0     0  13210      0 --:--:-- --:--:-- --:--:-- 13210
+Downloading from: https://github.com/kovidgoyal/kitty/releases/download/v0.48.0/kitty-0.48.0-x86_64.txz
+
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0
+100 30.5M  100 30.5M    0     0  15.9M      0  0:00:01  0:00:01 --:--:-- 25.2M
+Installing to /home/jinhyu/.local/kitty.app
+/home/jinhyu/.local/kitty.app/bin/kitty: /lib64/libm.so.6: version `GLIBC_2.35' not found (required by /home/jinhyu/.local/kitty.app/bin/../lib/libpython3.14.so.1.0)
+jinhyu@ol9:~%
+```
+
+---
+
 ## 1. Why the build runs in a container
 
 The host is missing the X11/DBUS development headers kitty links against:
